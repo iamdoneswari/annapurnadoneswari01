@@ -1,0 +1,563 @@
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+require('dotenv').config(); // Load environment variables from .env
+// --- CORRECTED PATH: No 'middleware' folder ---
+const auth = require('./auth'); // Assuming auth.js is directly in annapurna-backend
+// --- END CORRECTION ---
+// --- Mongoose Model Imports ---
+// Make sure these paths are correct relative to server.js
+const User = require('./models/User');
+const Listing = require('./models/Listing');
+const Order = require('./models/Order');
+
+// --- Initialization ---
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+// --- Middleware ---
+app.use(cors()); // Enable Cross-Origin Resource Sharing
+app.use(bodyParser.json()); // Parse incoming JSON requests
+
+// --- Database Connection (MongoDB Atlas) ---
+const MONGO_URI = process.env.MONGO_URI;
+
+mongoose.connect(MONGO_URI)
+    .then(() => console.log('MongoDB Atlas connected successfully!'))
+    .catch(err => {
+        console.error('MongoDB connection error:', err.message);
+        // Exit process with failure if DB connection fails
+        process.exit(1);
+    });
+
+// --- Helper Functions (AI Simulation & Monetization) ---
+
+/**
+ * Simulates nutritional data based on a list of ingredients.
+ * In a real app, this would be an external AI/ML service call.
+ * @param {string} ingredientsString - Comma-separated list of ingredients.
+ * @returns {object} Simulated nutritional data.
+ */
+const getNutritionEstimate = (ingredientsString) => {
+    // Handle potential null or undefined input
+    if (!ingredientsString) {
+        return { calories: 0, protein: 0, fat: 0 };
+    }
+
+    const ingredients = ingredientsString.toLowerCase().split(',').map(s => s.trim());
+    let calories = 0;
+    let protein = 0;
+    let fat = 0;
+
+    // Simplified lookup and calculation
+    ingredients.forEach(ing => {
+        if (ing.includes('rice')) { calories += 150; protein += 3; }
+        else if (ing.includes('chicken') || ing.includes('meat')) { calories += 200; protein += 30; fat += 8; }
+        else if (ing.includes('dal') || ing.includes('beans') || ing.includes('potato')) { calories += 100; protein += 7; }
+        else if (ing.includes('vegetables') || ing.includes('veg') || ing.includes('spices')) { calories += 50; protein += 3; }
+        else if (ing.includes('oil') || ing.includes('ghee') || ing.includes('yogurt')) { calories += 80; fat += 10; }
+    });
+
+    // Add a randomized factor for a more "intelligent" feel
+    const factor = 0.9 + Math.random() * 0.2; // +/- 10% variance
+
+    return {
+        calories: Math.round(calories * factor),
+        protein: Math.round(protein * factor),
+        fat: Math.round(fat * factor),
+    };
+};
+
+/**
+ * Simulates ride rate calculation. In a real app, this would use geometry/distance.
+ * @returns {object} Calculated fee details.
+ */
+const calculateRideRate = () => {
+    // Fixed simulated rates for hackathon MVP
+    const TOTAL_FEE = 60; // Simulated base fee
+    const COMMISSION_RATE = 0.20; // 20% commission for Annapurna
+
+    const annapurnaCommission = Math.round(TOTAL_FEE * COMMISSION_RATE);
+    const riderPayout = TOTAL_FEE - annapurnaCommission;
+
+    return {
+        totalFee: TOTAL_FEE,
+        annapurnaCommission: annapurnaCommission,
+        riderPayout: riderPayout,
+    };
+};
+
+
+// --- API Endpoints ---
+// --- ADD THIS ENTIRE BLOCK to server.js ---
+
+// 11. Delete Listing (Donor - only if 'available')
+app.delete('/api/listings/:listingId', async (req, res) => {
+    try {
+        const { listingId } = req.params;
+        // You might add userId verification here in a real app
+        // const { userId } = req.body; // Assuming you send userId
+
+        const listing = await Listing.findById(listingId);
+
+        if (!listing) {
+            return res.status(404).json({ message: 'Listing not found.' });
+        }
+
+        // Optional: Check if the user trying to delete is the donor
+        // if (listing.donorId.toString() !== userId) {
+        //     return res.status(403).json({ message: 'Not authorized to delete this listing.' });
+        // }
+
+        // IMPORTANT: Only allow deletion if the status is 'available'
+        if (listing.status !== 'available') {
+            return res.status(400).json({ message: 'Cannot delete listing once it has been claimed.' });
+        }
+
+        await Listing.findByIdAndDelete(listingId);
+
+        res.status(200).json({ message: 'Listing deleted successfully.' });
+
+    } catch (error) {
+        console.error('Delete listing error:', error);
+        res.status(500).json({ message: 'Failed to delete listing.' });
+    }
+});
+// --- END of DELETE /api/listings/:listingId ---
+
+// 1. User Registration (Public)
+// Creates a new user (Donor, Receiver, or Rider)
+app.post('/api/auth/register', async (req, res) => {
+    const { name, email, password, phone, address, role } = req.body;
+
+    // Basic validation
+    if (!name || !email || !password || !role) {
+        return res.status(400).json({ message: 'Please provide all required fields.' });
+    }
+
+    try {
+        // Check if user already exists
+        const existingUser = await User.findOne({ email });
+        if (existingUser) {
+            return res.status(400).json({ message: 'User already exists with this email.' });
+        }
+
+        // Hash password
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        // Create new user in the database
+        const newUser = await User.create({
+            name,
+            email,
+            password: hashedPassword,
+            phone,
+            address,
+            role,
+        });
+
+        // Send back user data (excluding password)
+        res.status(201).json({
+            _id: newUser._id,
+            name: newUser.name,
+            role: newUser.role,
+            address: newUser.address,
+            message: 'Registration successful!',
+        });
+
+    } catch (error) {
+        console.error('Registration error:', error);
+        res.status(500).json({ message: 'Server error during registration.' });
+    }
+});
+
+// 2. User Login (Public)
+// Authenticates a user and returns their data
+// 2. User Login (Public)
+// Authenticates a user and returns their data AND a JWT Token
+app.post('/api/auth/login', async (req, res) => {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+        return res.status(400).json({ message: 'Please provide email and password.' });
+    }
+
+    try {
+        const user = await User.findOne({ email });
+        if (!user) {
+            return res.status(401).json({ message: 'Invalid Credentials (User not found).' });
+        }
+
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            return res.status(401).json({ message: 'Invalid Credentials (Wrong password).' });
+        }
+
+        // --- CRUCIAL: CREATE JWT TOKEN ---
+        const token = jwt.sign(
+            // Payload: what data to encode in the token
+            { _id: user._id, role: user.role, name: user.name },
+            process.env.JWT_SECRET, // Your secret key from the .env file
+            { expiresIn: '1h' } // Token expires in 1 hour
+        );
+
+        // Successful login: Send back user data AND the token
+        res.status(200).json({
+            _id: user._id,
+            name: user.name,
+            role: user.role,
+            address: user.address,
+            token: token, // <--- SEND THE TOKEN BACK TO THE FRONTEND
+            message: 'Login successful!',
+        });
+
+    } catch (error) {
+        console.error('Login error:', error);
+        res.status(500).json({ message: 'Server error during login.' });
+    }
+});
+
+// 3. Create Listing (Donor)
+// Allows a logged-in Donor to create a new food listing
+app.post('/api/listings', auth, async (req, res) => { // <-- Added 'auth' middleware here
+    try {
+        // Correctly destructure all expected fields from req.body
+        // The frontend sends 'items' as an array, not individual foodItem, quantity, etc.
+        const { items, pickupTimeWindow, shelfLifeHours, veg, notes, location } = req.body;
+
+        // Backend validation: Ensure all required fields (including the new 'location') are present and valid
+        if (!items || items.length === 0 ||
+            !pickupTimeWindow ||
+            !shelfLifeHours ||
+            !veg ||
+            !location || !location.type || location.type !== 'Point' || // Validate location.type
+            !location.coordinates || location.coordinates.length !== 2 || // Validate location.coordinates
+            isNaN(location.coordinates[0]) || isNaN(location.coordinates[1]) // Ensure coordinates are numbers
+        ) {
+            return res.status(400).json({ message: 'Missing or invalid required listing fields (items, pickupTime, shelfLife, veg, location).' });
+        }
+
+        // --- AI Simulation Step ---
+        // Assuming 'ingredients' come from the 'items' array
+        // You might want to combine all ingredients from all items, or process per item
+        const allIngredients = items.map(item => item.ingredients).join(', ');
+        const nutritionalData = getNutritionEstimate(allIngredients);
+
+
+        // Create new listing in the database using the Listing model schema
+        const newListing = new Listing({ // <-- Use 'new Listing' then 'save()'
+            donor: req.user._id, // <-- THIS IS THE FIXth middleware puts user ID on req.user
+            items: items, // Save the entire items array
+            pickupTimeWindow: pickupTimeWindow,
+            shelfLifeHours: shelfLifeHours,
+            veg: veg,
+            notes: notes,
+            location: { // Correctly pass the location object as per schema
+                type: 'Point',
+                coordinates: [location.coordinates[0], location.coordinates[1]] // Ensures [longitude, latitude]
+            },
+            nutritionalData: nutritionalData, // Save the AI result
+            status: 'available' // Default status
+        });
+
+        // Calculate expiresAt based on createdAt + shelfLifeHours
+        newListing.expiresAt = new Date(newListing.createdAt.getTime() + shelfLifeHours * 60 * 60 * 1000);
+
+        await newListing.save(); // Save the new listing
+
+        res.status(201).json(newListing);
+    } catch (error) {
+        console.error('Create listing error:', error);
+        // More descriptive error messages can be sent for debugging
+        if (error.name === 'ValidationError') {
+            return res.status(400).json({ message: 'Listing validation failed', errors: error.errors });
+        }
+        res.status(500).json({ message: 'Failed to create listing due to server error.' });
+    }
+});
+
+// --- PASTE THIS NEW, WORKING VERSION ---
+
+// 4. Get All Listings (All Roles) - [FIXED]
+app.get('/api/listings', async (req, res) => { // No 'auth' middleware
+    try {
+        // Find all listings
+        // --- CORRECTED QUERY ---
+        const listings = await Listing.find() // Find all listings
+            .populate('donor', 'name role avgRating') // Also populate donor rating
+            .sort({ createdAt: -1 }); // Sort by newest first
+        // --- END CORRECTION ---
+        res.status(200).json(listings);
+    } catch (error) {
+        // This log will show you the error in your backend terminal
+        console.error('Error in GET /api/listings:', error);
+        res.status(500).json({ message: 'Failed to fetch listings.' });
+    }
+});
+// 5. Claim Listing (Receiver)
+// Allows a Receiver to claim an 'available' listing
+app.post('/api/orders/claim', async (req, res) => {
+    try {
+        const { listingId, receiverId, receiverName, receiverAddress } = req.body;
+
+        // Check if the listing is available
+        const listing = await Listing.findById(listingId);
+        if (!listing || listing.status !== 'available') {
+            return res.status(400).json({ message: 'Listing is not available for claim.' });
+        }
+
+        // 1. Update Listing status to 'claimed'
+        listing.status = 'claimed';
+        await listing.save();
+
+        // 2. Create Order (Awaiting Rider)
+        // This new order links the listing and receiver
+        const newOrder = await Order.create({
+            listingId,
+            receiverId,
+            receiverName,
+            receiverAddress,
+            status: 'awaiting_rider', // Ready for a rider to accept
+        });
+
+        res.status(201).json(newOrder);
+    } catch (error) {
+        console.error('Claim listing error:', error);
+        res.status(500).json({ message: 'Failed to claim listing.' });
+    }
+});
+
+// 6. Rider Accepts Order (Rider) - [SECURED]
+app.put('/api/orders/:orderId/accept', auth, async (req, res) => { // Added auth
+    try {
+        const { orderId } = req.params;
+        // Get rider details from authenticated token
+        const riderId = req.user._id;
+        const riderName = req.user.name;
+
+        // --- Validation ---
+        if (!mongoose.Types.ObjectId.isValid(orderId)) {
+            return res.status(400).json({ message: 'Invalid order ID format.' });
+        }
+        if (req.user.role !== 'rider') {
+            return res.status(403).json({ message: 'Forbidden: Only riders can accept orders.' });
+        }
+        // --- End Validation ---
+
+
+        // Check if order is available to be accepted
+        const orderToAccept = await Order.findById(orderId);
+        if (!orderToAccept) {
+            return res.status(404).json({ message: 'Order not found.' });
+        }
+        if (orderToAccept.status !== 'awaiting_rider') {
+            return res.status(400).json({ message: `Order cannot be accepted (Status: ${orderToAccept.status}).` });
+        }
+
+        // --- Monetization Step ---
+        const rates = calculateRideRate(); // Calculate fees
+
+        // Find and update the order
+        const updatedOrder = await Order.findByIdAndUpdate(
+            orderId,
+            {
+                riderId: riderId,         // Assign rider from token
+                riderName: riderName,       // Assign name from token
+                status: 'picked_up',    // <-- Ensure status is 'picked_up'
+                totalFee: rates.totalFee,
+                annapurnaCommission: rates.annapurnaCommission,
+                riderPayout: rates.riderPayout,
+                pickedUpAt: Date.now(), // Record pickup time
+            },
+            { new: true } // Return the updated document
+        ).populate({ // Populate necessary details for immediate frontend update
+            path: 'listingId',
+            select: 'items address donorName veg donor',
+            populate: { path: 'donor', select: 'name avgRating' }
+        });
+
+        if (!updatedOrder) {
+            // This case should ideally not happen if findById check passed
+            console.error('Accept Error: Failed to update order after initial check:', orderId);
+            return res.status(404).json({ message: 'Order not found during update.' });
+        }
+
+        // Also update the original Listing status (Optional but good for visibility)
+        if (updatedOrder.listingId) { // Check if listingId exists before updating
+            await Listing.findByIdAndUpdate(updatedOrder.listingId._id, { status: 'picked_up' });
+        }
+
+        console.log(`Order ${orderId} accepted by rider ${riderName}`);
+        res.status(200).json(updatedOrder); // <-- Send back the UPDATED and POPULATED order
+
+    } catch (error) {
+        console.error('Rider accept order error:', error);
+        res.status(500).json({ message: 'Failed to accept order.' });
+    }
+});
+// 7. Update Order Status to Delivered (Rider) - [SECURED]
+app.put('/api/orders/:orderId/deliver', auth, async (req, res) => { // Added auth
+    try {
+        const { orderId } = req.params;
+
+        // --- Validation ---
+        if (!mongoose.Types.ObjectId.isValid(orderId)) {
+            return res.status(400).json({ message: 'Invalid order ID format.' });
+        }
+        if (req.user.role !== 'rider') {
+            return res.status(403).json({ message: 'Forbidden: Only riders can complete deliveries.' });
+        }
+        // Find the order first to verify the current rider owns it
+        const orderToDeliver = await Order.findById(orderId);
+        if (!orderToDeliver) {
+            return res.status(404).json({ message: 'Order not found.' });
+        }
+        // Check if the logged-in user is the assigned rider
+        if (orderToDeliver.riderId.toString() !== req.user._id.toString()) {
+            return res.status(403).json({ message: 'Forbidden: You are not assigned to this delivery.' });
+        }
+        if (orderToDeliver.status !== 'picked_up') {
+            return res.status(400).json({ message: `Order cannot be delivered (Status: ${orderToDeliver.status}).` });
+        }
+        // --- End Validation ---
+
+        // Find and update the order status
+        const updatedOrder = await Order.findByIdAndUpdate(
+            orderId,
+            {
+                status: 'delivered', // <-- Ensure status is 'delivered'
+                deliveredAt: Date.now()
+            },
+            { new: true } // Return the updated document
+        ).populate({ // Populate details for frontend update
+            path: 'listingId',
+            select: 'items address donorName veg donor',
+            populate: { path: 'donor', select: 'name avgRating' }
+        });
+
+        if (!updatedOrder) {
+            console.error('Deliver Error: Failed to update order:', orderId);
+            return res.status(404).json({ message: 'Order not found during update.' });
+        }
+
+        // --- IMPORTANT: Also update the original Listing status ---
+        if (updatedOrder.listingId) { // Check listingId exists
+            await Listing.findByIdAndUpdate(updatedOrder.listingId._id, { status: 'delivered' });
+            console.log(`Updated listing ${updatedOrder.listingId._id} status to delivered.`);
+        }
+        // --- END Listing Update ---
+
+        console.log(`Order ${orderId} marked as delivered.`);
+        res.status(200).json(updatedOrder); // <-- Send back the UPDATED and POPULATED order
+
+    } catch (error) {
+        console.error('Delivery update error:', error);
+        res.status(500).json({ message: 'Failed to update delivery status.' });
+    }
+});
+
+
+// 8. Submit Rating/Review (Receiver)
+// Allows the Receiver to rate the food listing after delivery
+app.post('/api/listings/:listingId/rate', async (req, res) => {
+    try {
+        const { listingId } = req.params;
+        const { reviewerId, reviewerName, rating, review } = req.body;
+
+        const listing = await Listing.findById(listingId);
+        if (!listing) {
+            return res.status(404).json({ message: 'Listing not found.' });
+        }
+
+        // Check if user already rated this listing (good practice)
+        const hasRated = listing.ratings.some(r => r.reviewerId.toString() === reviewerId);
+        if (hasRated) {
+            return res.status(400).json({ message: 'You have already rated this listing.' });
+        }
+
+        // Add the new rating to the listing's ratings array
+        listing.ratings.push({ reviewerId, reviewerName, rating, review });
+
+        // Mongoose pre-save middleware (in Listing.js) 
+        // will automatically calculate the new ratingAvg here!
+        await listing.save();
+
+        res.status(200).json({ message: 'Rating submitted successfully!', ratingAvg: listing.ratingAvg });
+
+    } catch (error) {
+        console.error('Rating submission error:', error);
+        res.status(500).json({ message: 'Failed to submit rating.' });
+    }
+});
+
+// 9. Get User-Specific Orders (All Roles)
+// Fetches orders relevant to a specific user (as Receiver or Rider)
+app.get('/api/orders/user/:userId', async (req, res) => {
+    const { userId } = req.params;
+
+    try {
+        // Fetch orders where the user is either the receiver or the rider
+        const orders = await Order.find({
+            $or: [{ receiverId: userId }, { riderId: userId }]
+        })
+            .populate('listingId') // Include details from the Listing model
+            .sort({ claimedAt: -1 }); // Show newest first
+
+        res.status(200).json(orders);
+    } catch (error) {
+        console.error('Get user orders error:', error);
+        res.status(500).json({ message: 'Failed to fetch user orders.' });
+    }
+});
+
+// 10. Get Orders Awaiting Rider (Rider Dashboard)
+// Fetches all orders that are waiting for a rider to accept
+app.get('/api/orders/awaiting-rider', async (req, res) => {
+    try {
+        const orders = await Order.find({ status: 'awaiting_rider' })
+            .populate('listingId') // Include listing details
+            .sort({ claimedAt: 1 }); // Show oldest first (first-come, first-serve)
+
+        res.status(200).json(orders);
+    } catch (error) {
+        console.error('Get awaiting orders error:', error);
+        res.status(500).json({ message: 'Failed to fetch awaiting orders.' });
+    }
+});
+
+// --- CHECK FOR THIS CODE BLOCK in server.js ---
+
+// 11. Delete Listing (Donor - only if 'available')
+app.delete('/api/listings/:listingId', async (req, res) => { // <<< Make sure this path is EXACTLY '/api/listings/:listingId'
+    try {
+        const { listingId } = req.params;
+
+        const listing = await Listing.findById(listingId);
+
+        if (!listing) {
+            return res.status(404).json({ message: 'Listing not found.' });
+        }
+
+        // IMPORTANT: Only allow deletion if the status is 'available'
+        if (listing.status !== 'available') {
+            return res.status(400).json({ message: 'Cannot delete listing once it has been claimed.' });
+        }
+
+        await Listing.findByIdAndDelete(listingId);
+
+        res.status(200).json({ message: 'Listing deleted successfully.' });
+
+    } catch (error) {
+        console.error('Delete listing error:', error);
+        res.status(500).json({ message: 'Failed to delete listing.' });
+    }
+});
+// --- END of DELETE /api/listings/:listingId ---
+// --- Server Start ---
+app.listen(PORT, () => {
+    console.log(`Annapurna MERN Backend running on http://localhost:${PORT}`);
+});
+
