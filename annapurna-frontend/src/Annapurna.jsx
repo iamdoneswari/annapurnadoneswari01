@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'; // <-- ADD useRef
 import axios from 'axios';
 import logo from './assets/annapurna-logo.png'; // <-- Does 'annapurna-logo.png' EXACTLY match your file?
 import donorImage from './assets/donor-food-donation.png'; // Make sure filename matches yours!
@@ -7,6 +7,7 @@ import riderImage from './assets/rider-delivery.png';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet'; // Import Leaflet library itself
 import 'leaflet/dist/leaflet.css';
+
 // --- FIX for Leaflet Icons ---
 // This fixes the common issue where markers don't appear
 delete L.Icon.Default.prototype._getIconUrl;
@@ -464,7 +465,7 @@ const Annapurna = () => {
         } finally {
             setDataLoading(false); // Ensure loading is turned off
         }
-    }, [userProfile, isBackendConnected]); // Depend only on userProfile and connection status
+    }, [userProfile]);
 
     // --- REPLACE the entire first useEffect hook (around line 315) with this ---
 
@@ -494,9 +495,8 @@ const Annapurna = () => {
         });
     }, []);
     // --- END GEOLOCATION HELPER ---
-
-    // ... (renderHome, renderLogin, etc. functions) ...
-    // Initial Load Effect (Runs only once on mount)
+    // --- PASTE THIS CLEAN VERSION ---
+    // First useEffect: Initial Load Only
     useEffect(() => {
         // --- Initial Setup ---
         const storedUser = localStorage.getItem('annapurnaUser');
@@ -504,31 +504,38 @@ const Annapurna = () => {
             try {
                 const user = JSON.parse(storedUser);
                 setUserProfile(user);
-                // View will be set by the second useEffect based on userProfile
             } catch (e) {
                 console.error("Failed to parse stored user", e);
                 localStorage.removeItem('annapurnaUser');
+                setView('home');
             }
         } else {
-            // If no user stored, ensure view defaults to home immediately
-            // (unless navigating via login/register later)
             setView('home');
         }
 
         // --- Perform the very first data fetch ---
-        fetchData(true); // Argument 'true' marks it as the initial load
+        console.log("Performing initial data fetch..."); // Debug log
+        fetchData(true); // Initial load
 
-        // --- NO setInterval, NO visibility listener ---
+        // --- NO POLLING LOGIC AT ALL ---
 
-        // Cleanup function is empty as there's nothing to clean up from this hook now
-        // return () => {};
+        // --- NO CLEANUP FUNCTION NEEDED ---
 
-        // }, []); // <-- IMPORTANT: Dependency array is NOW EMPTY
-    }, []); // <-- Dependency array is EMPTY. fetchData is called but not listed here.
-    // We rely on the initial call and subsequent calls triggered by user actions or profile changes.
+        // Dependency: Only fetchData is needed here.
+        // This hook runs once on mount.
+    }, []);
+    // --- END of final cleaned useEffect hook ---
+    // ... (renderHome, renderLogin, etc. functions) ...
+    // Initial Load Effect (Runs only once on mount)
+    // ... (fetchData function ends) ...
 
-    // -// --- REPLACE the entire second useEffect hook with this ---
+    // --- NEW, UPDATED useEffect hook ---
+    // Initial Load and Polling Effect
+    // --- CORRECTED FIRST useEffect using useRef ---
+    // --- SIMPLIFIED First useEffect (Initial Load Only) ---
 
+    // --- KEEP THIS SECOND useEffect ---
+    // Effect to update view based on userProfile and fetch relevant data
     // Effect to update view based on userProfile and fetch relevant data
     useEffect(() => {
         if (userProfile?._id) { // Check if userProfile is valid and has an ID
@@ -537,9 +544,8 @@ const Annapurna = () => {
                 setView(userProfile.role); // Navigate to their dashboard
             }
             // Fetch data relevant to this user *after* profile is confirmed
-            // Use a small delay if needed to ensure state update completes, though usually not required
-            // setTimeout(() => fetchData(false), 0); // Example with slight delay
-            fetchData(false); // Fetch data for the logged-in user (not marked as initial load)
+            console.log("User profile changed, fetching non-initial data..."); // Debug log
+            fetchData(false); // Fetch data for the logged-in user (not initial load)
 
         } else {
             // User logged out or not found in storage
@@ -547,17 +553,11 @@ const Annapurna = () => {
             if (view !== 'login' && !view.startsWith('register')) {
                 setView('home');
             }
-            // Optionally clear data immediately on logout (already done in handleLogout)
-            // setListings([]);
-            // setOrders([]);
+            // Clear data immediately on logout (already done in handleLogout, but safe to keep here too)
+            setListings([]);
+            setOrders([]);
         }
-        // }, [userProfile]); // <-- DEPEND ONLY ON userProfile
-    }, [userProfile]); // <-- Dependency array ONLY contains userProfile
-
-    // --- END of the updated second useEffect hook ---
-
-    // --- ADD THIS FUNCTION inside Annapurna component ---
-    // --- NEW (CORRECT) CODE ---
+    }, [userProfile, fetchData]); // <-- KEEP fetchData in dependencies here
     const handleDeleteListing = async (listingId) => {
         if (!userProfile) return setError("Login required.");
 
@@ -1021,10 +1021,23 @@ const Annapurna = () => {
                                 <div key={listing._id} className={`${cardClass} relative grid grid-cols-1 md:grid-cols-4 gap-4 items-start animate-fade-in`}>
                                     {listing.quantity > 5 && <span className={premiumBadgeClass}>High Impact</span>}
                                     <div className="md:col-span-2 space-y-1">
-                                        <h4 className="font-bold text-xl text-blue-700">{listing.foodItem}</h4>
+                                        {/* --- NEW, CORRECTED CODE --- */}
+                                        {/* Display the name of the first item, or 'Multiple Items' */}
+                                        <h4 className="font-bold text-xl text-blue-700">{listing.items?.[0]?.itemName || 'Donation Items'} {listing.items?.length > 1 ? `(+${listing.items.length - 1} more)` : ''}</h4>
                                         <p className="text-xs text-gray-400">Listed: {new Date(listing.createdAt).toLocaleString()}</p>
-                                        <p className="text-sm pt-1"><span className="font-semibold">Items:</span> {listing.ingredients || 'N/A'}</p>
-                                        <p className="text-sm"><span className="font-semibold">Qty:</span> {listing.quantity} (approx)</p>
+                                        {/* --- NEW, CORRECTED CODE --- */}
+                                        {/* Display each item with its quantity */}
+                                        <div className="text-sm pt-1">
+                                            <span className="font-semibold">Items:</span>
+                                            <ul className="list-disc list-inside ml-4">
+                                                {listing.items?.map((item, index) => (
+                                                    <li key={item.id || index}>
+                                                        {item.itemName} ({item.quantity} {item.unit})
+                                                    </li>
+                                                )) || <li>N/A</li>}
+                                            </ul>
+                                        </div>
+                                        {/* --- END CORRECTED CODE --- */}{/* --- END CORRECTED CODE --- */}
                                         <p className="text-sm"><span className="font-semibold">Pickup:</span> {listing.pickupTimeWindow || 'ASAP'}</p>
                                         <p className="text-sm font-semibold text-red-600"><span className="font-semibold text-gray-700">Good For:</span> ~{listing.shelfLifeHours} hrs</p>
                                         <div className="mt-2 text-xs bg-blue-50 p-2 rounded border inline-block"><p className="font-semibold text-blue-700">Est. Nutri:</p><p>C:{listing.nutritionalData?.calories} P:{listing.nutritionalData?.protein}g F:{listing.nutritionalData?.fat}g</p></div>
@@ -1091,19 +1104,58 @@ const Annapurna = () => {
         const submitRating = (listingId) => { handleRatingSubmission(listingId, parseInt(ratingForm.rating), ratingForm.review); };
 
 
+        // --- ENHANCED ListingCard within renderReceiverView ---
+        const ListingCard = ({ listing }) => {
+            // Safely access data
+            const firstItemName = listing.items?.[0]?.itemName || 'Food Item';
+            const donorName = listing.donor?.name || 'Unknown Donor';
+            const donorAvgRating = listing.donor?.avgRating; // Get avg rating from populated donor
+            const pickupAddress = listing.address || 'Address not specified'; // Get address from listing itself
 
-        const ListingCard = ({ listing }) => (
-            <div className="bg-white p-4 rounded-lg shadow-xl border-l-4 border-blue-500 hover:shadow-2xl transition duration-300 cursor-pointer" onClick={() => setSelectedListing(listing)}>
-                <h4 className="font-bold text-lg">{listing.foodItem} ({listing.veg === 'veg' ? '🌱' : '🍖'})</h4>
-                <p className="text-gray-600 text-sm">Donor: {listing.donorName} | Servings: {listing.quantity}</p>
-                <div className="mt-2 text-sm bg-blue-100 p-2 rounded-lg">
-                    <h5 className="font-semibold text-blue-700">✨ Nutritional Estimate</h5>
-                    <p className="text-xs">Cal: <span className="font-semibold">{listing.nutritionalData?.calories || '?'}</span> | Prot: <span className="font-semibold">{listing.nutritionalData?.protein || '?'}g</span></p>
+            return (
+                <div className="bg-white p-4 rounded-lg shadow-xl border-l-4 border-blue-500 hover:shadow-2xl transition duration-300 cursor-pointer animate-fade-in" onClick={() => setSelectedListing(listing)}>
+                    {/* Main Title */}
+                    <h4 className="font-bold text-lg">{firstItemName} {listing.items?.length > 1 ? `(+${listing.items.length - 1} more)` : ''} ({listing.veg === 'veg' ? '🌱' : listing.veg === 'non-veg' ? '🍖' : '🍲'})</h4>
+
+                    {/* Donor Details */}
+                    <div className="text-gray-600 text-sm mt-1 mb-2">
+                        <span>From: <span className="font-semibold">{donorName}</span></span>
+                        <span className="ml-2"> | Rating:
+                            <span className="font-semibold text-amber-600 ml-1">
+                                {donorAvgRating ? `${donorAvgRating.toFixed(1)} ★` : 'Not Rated'}
+                            </span>
+                        </span>
+                    </div>
+
+                    {/* Food Items List */}
+                    <div className="text-sm my-2">
+                        <span className="font-semibold">Items:</span>
+                        <ul className="list-disc list-inside ml-4 mt-1">
+                            {listing.items?.map((item, index) => (
+                                <li key={item.id || index} className="text-gray-700">
+                                    {item.itemName} ({item.quantity} {item.unit})
+                                </li>
+                            )) || <li>Details unavailable</li>}
+                        </ul>
+                    </div>
+
+                    {/* Pickup Address */}
+                    <p className="text-xs text-gray-500 mt-2">Pickup: {pickupAddress}</p>
+
+
+                    {/* Nutritional Estimate */}
+                    <div className="mt-2 text-sm bg-blue-50 p-2 rounded border inline-block">
+                        <h5 className="font-semibold text-blue-700 text-xs mb-1">✨ Est. Nutrition (Total)</h5>
+                        <p className="text-xs">Cal: <span className="font-semibold">{listing.nutritionalData?.calories || '?'}</span> | Prot: <span className="font-semibold">{listing.nutritionalData?.protein || '?'}g</span> | Fat: <span className="font-semibold">{listing.nutritionalData?.fat || '?'}g</span></p>
+                    </div>
+
+                    {/* Listing Rating (Different from Donor Rating) */}
+                    {/* <p className="text-sm mt-2 font-semibold text-green-700">Listing Avg Rating: {listing.ratingAvg ? `${listing.ratingAvg.toFixed(1)} ★` : 'Not Rated Yet'}</p> */}
+
                 </div>
-                <p className="text-sm mt-2 font-semibold text-green-700">Rating: {listing.ratingAvg ? listing.ratingAvg.toFixed(1) : 'N/A'} Stars</p>
-            </div>
-        );
-
+            );
+        };
+        // --- END ENHANCED ListingCard ---
         const Modal = () => {
             if (!selectedListing) return null;
             // Ensure listingId is populated before accessing nested properties
