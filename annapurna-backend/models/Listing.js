@@ -1,3 +1,5 @@
+// --- NEW annapurna-backend/models/Listing.js ---
+
 const mongoose = require('mongoose');
 
 // Sub-schema for individual user ratings/reviews
@@ -9,37 +11,64 @@ const ratingSchema = new mongoose.Schema({
     ratedAt: { type: Date, default: Date.now }
 });
 
-// Main schema for food listings
+// --- NEW SUB-SCHEMA FOR ITEMS ---
+// This defines the structure for the 'items' array
+const itemSchema = new mongoose.Schema({
+    itemName: { type: String, required: true },
+    quantity: { type: Number, default: 1 },
+    unit: { type: String, default: 'servings' },
+    ingredients: { type: String }
+}, { _id: false }); // _id: false stops Mongoose from adding an _id to each item
+
+// --- Main schema for food listings ---
 const listingSchema = new mongoose.Schema({
     // Donor Information (links to the User model)
-    donorId: {
+    donor: { // RENAMED from 'donorId' to match server.js
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
         required: true,
     },
-    donorName: { type: String, required: true },
-    address: { type: String, required: true },
+    
+    // --- NEW FOOD DETAILS ---
+    // Replaced foodItem, quantity, ingredients, etc. with this 'items' array
+    items: [itemSchema], 
 
-    // Food Details
-    foodItem: { type: String, required: true },
-    quantity: { type: Number, required: true, min: 1 }, // Servings
-    hoursOld: { type: Number, required: true, min: 0 },
-    veg: { type: String, enum: ['veg', 'non-veg'], required: true },
-    ingredients: { type: String, required: true }, // Comma-separated list for AI input
-    // --- ADD THIS LINE ---
-    pickupTimeWindow: { type: String, default: 'ASAP' }, // Added field for pickup time
-    // --- END ADD ---
+    // --- FIXED ENUM ---
+    veg: { 
+        type: String, 
+        enum: ['veg', 'non-veg', 'mixed'], // ADDED 'mixed'
+        required: true 
+    },
+    
+    pickupTimeWindow: { type: String, default: 'ASAP' },
+    shelfLifeHours: { type: Number, required: true, min: 1 },
+    expiresAt: { type: Date }, // Will be set by server
+    
+    // --- NEW FIELD ---
+    notes: { type: String, trim: true }, // Added notes field
+
+    // Location
+    location: {
+        type: {
+            type: String,
+            enum: ['Point'],
+            default: 'Point',
+            required: true
+        },
+        coordinates: {
+            type: [Number], // [Longitude, Latitude]
+            required: true
+        }
+    },
+
     // Status
-    // --- ADD THIS LINE ---
-    shelfLifeHours: { type: Number, required: true, min: 1 }, // Added field for shelf life (in hours from now)
-    // --- END ADD ---
     status: {
         type: String,
-        enum: ['available', 'claimed', 'delivered'],
+        enum: ['available', 'claimed', 'picked_up', 'delivered', 'cancelled'],
         default: 'available',
     },
 
-    // AI/Nutritional Data (The Magic)
+    // AI/Nutritional Data
     nutritionalData: {
         calories: { type: Number, default: 0 },
         protein: { type: Number, default: 0 },
@@ -57,7 +86,7 @@ const listingSchema = new mongoose.Schema({
     }
 });
 
-// Middleware to calculate average rating whenever a new rating is added
+// Middleware to calculate average rating
 listingSchema.pre('save', function (next) {
     if (this.isModified('ratings') && this.ratings.length > 0) {
         const totalRating = this.ratings.reduce((sum, r) => sum + r.rating, 0);
@@ -67,5 +96,8 @@ listingSchema.pre('save', function (next) {
     }
     next();
 });
+
+// Create a 2dsphere index for geospatial queries (finding things nearby)
+listingSchema.index({ location: '2dsphere' });
 
 module.exports = mongoose.model('Listing', listingSchema);

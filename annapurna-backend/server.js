@@ -3,8 +3,11 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 require('dotenv').config(); // Load environment variables from .env
-
+// --- CORRECTED PATH: No 'middleware' folder ---
+const auth = require('./auth'); // Assuming auth.js is directly in annapurna-backend
+// --- END CORRECTION ---
 // --- Mongoose Model Imports ---
 // Make sure these paths are correct relative to server.js
 const User = require('./models/User');
@@ -173,6 +176,8 @@ app.post('/api/auth/register', async (req, res) => {
 
 // 2. User Login (Public)
 // Authenticates a user and returns their data
+// 2. User Login (Public)
+// Authenticates a user and returns their data AND a JWT Token
 app.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
 
@@ -181,24 +186,31 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     try {
-        // Find user by email
         const user = await User.findOne({ email });
         if (!user) {
             return res.status(401).json({ message: 'Invalid Credentials (User not found).' });
         }
 
-        // Compare password with the hashed version
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
             return res.status(401).json({ message: 'Invalid Credentials (Wrong password).' });
         }
 
-        // Successful login: Send back user data
+        // --- CRUCIAL: CREATE JWT TOKEN ---
+        const token = jwt.sign(
+            // Payload: what data to encode in the token
+            { _id: user._id, role: user.role, name: user.name },
+            process.env.JWT_SECRET, // Your secret key from the .env file
+            { expiresIn: '1h' } // Token expires in 1 hour
+        );
+
+        // Successful login: Send back user data AND the token
         res.status(200).json({
             _id: user._id,
             name: user.name,
             role: user.role,
             address: user.address,
+            token: token, // <--- SEND THE TOKEN BACK TO THE FRONTEND
             message: 'Login successful!',
         });
 
@@ -208,56 +220,82 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-
 // 3. Create Listing (Donor)
 // Allows a logged-in Donor to create a new food listing
-app.post('/api/listings', async (req, res) => {
+app.post('/api/listings', auth, async (req, res) => { // <-- Added 'auth' middleware here
     try {
-        const { donorId, donorName, foodItem, quantity, hoursOld, veg, ingredients, address, pickupTimeWindow, shelfLifeHours } = req.body;
+        // Correctly destructure all expected fields from req.body
+        // The frontend sends 'items' as an array, not individual foodItem, quantity, etc.
+        const { items, pickupTimeWindow, shelfLifeHours, veg, notes, location } = req.body;
+
+        // Backend validation: Ensure all required fields (including the new 'location') are present and valid
+        if (!items || items.length === 0 ||
+            !pickupTimeWindow ||
+            !shelfLifeHours ||
+            !veg ||
+            !location || !location.type || location.type !== 'Point' || // Validate location.type
+            !location.coordinates || location.coordinates.length !== 2 || // Validate location.coordinates
+            isNaN(location.coordinates[0]) || isNaN(location.coordinates[1]) // Ensure coordinates are numbers
+        ) {
+            return res.status(400).json({ message: 'Missing or invalid required listing fields (items, pickupTime, shelfLife, veg, location).' });
+        }
 
         // --- AI Simulation Step ---
-        // Calculate nutrition based on ingredients
-        const nutritionalData = getNutritionEstimate(ingredients);
+        // Assuming 'ingredients' come from the 'items' array
+        // You might want to combine all ingredients from all items, or process per item
+        const allIngredients = items.map(item => item.ingredients).join(', ');
+        const nutritionalData = getNutritionEstimate(allIngredients);
 
-        // Create new listing in the database
-        const newListing = await Listing.create({
-            donorId,
-            donorName,
-            address,
-            foodItem,
-            quantity,
-            hoursOld,
-            veg,
-            ingredients,
-            // --- ADD 'pickupTimeWindow' HERE ---
-            pickupTimeWindow, // Save the received pickup time
-            // --- ADD 'shelfLifeHours' HERE ---
-            shelfLifeHours, // How many more hours it's good f
-            nutritionalData, // Saved the AI result
-            status: 'available', // Default status
+
+        // Create new listing in the database using the Listing model schema
+        const newListing = new Listing({ // <-- Use 'new Listing' then 'save()'
+            donor: req.user._id, // <-- THIS IS THE FIXth middleware puts user ID on req.user
+            items: items, // Save the entire items array
+            pickupTimeWindow: pickupTimeWindow,
+            shelfLifeHours: shelfLifeHours,
+            veg: veg,
+            notes: notes,
+            location: { // Correctly pass the location object as per schema
+                type: 'Point',
+                coordinates: [location.coordinates[0], location.coordinates[1]] // Ensures [longitude, latitude]
+            },
+            nutritionalData: nutritionalData, // Save the AI result
+            status: 'available' // Default status
         });
+
+        // Calculate expiresAt based on createdAt + shelfLifeHours
+        newListing.expiresAt = new Date(newListing.createdAt.getTime() + shelfLifeHours * 60 * 60 * 1000);
+
+        await newListing.save(); // Save the new listing
 
         res.status(201).json(newListing);
     } catch (error) {
         console.error('Create listing error:', error);
-        res.status(500).json({ message: 'Failed to create listing.' });
+        // More descriptive error messages can be sent for debugging
+        if (error.name === 'ValidationError') {
+            return res.status(400).json({ message: 'Listing validation failed', errors: error.errors });
+        }
+        res.status(500).json({ message: 'Failed to create listing due to server error.' });
     }
 });
 
-// 4. Get All Listings (All Roles)
-// Fetches all listings for the main dashboard
-app.get('/api/listings', async (req, res) => {
+// --- PASTE THIS NEW, WORKING VERSION ---
+
+// 4. Get All Listings (All Roles) - [FIXED]
+app.get('/api/listings', async (req, res) => { // No 'auth' middleware
     try {
-        // Find all listings, ordered by newest first
-        const listings = await Listing.find().sort({ createdAt: -1 });
+        // Find all listings
+        const listings = await Listing.find()
+            .populate('donor', 'name role') // Populate the donor's name and role
+            .sort({ createdAt: -1 }); // Sort by newest first
+
         res.status(200).json(listings);
     } catch (error) {
-        console.error('Get listings error:', error);
+        // This log will show you the error in your backend terminal
+        console.error('Error in GET /api/listings:', error);
         res.status(500).json({ message: 'Failed to fetch listings.' });
     }
 });
-
-
 // 5. Claim Listing (Receiver)
 // Allows a Receiver to claim an 'available' listing
 app.post('/api/orders/claim', async (req, res) => {

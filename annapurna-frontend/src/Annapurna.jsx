@@ -4,6 +4,19 @@ import logo from './assets/annapurna-logo.png'; // <-- Does 'annapurna-logo.png'
 import donorImage from './assets/donor-food-donation.png'; // Make sure filename matches yours!
 import receiverImage from './assets/receiver-meal.png';
 import riderImage from './assets/rider-delivery.png';
+import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
+import L from 'leaflet'; // Import Leaflet library itself
+import 'leaflet/dist/leaflet.css';
+// --- FIX for Leaflet Icons ---
+// This fixes the common issue where markers don't appear
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+    iconUrl: require('leaflet/dist/images/marker-icon.png'),
+    iconRetinaUrl: require('leaflet/dist/images/marker-icon-2x.png'),
+    shadowUrl: require('leaflet/dist/images/marker-shadow.png'),
+    iconAnchor: [12, 41] // Manually set anchor for default icon
+});
+// --- END FIX ---
 
 // --- CONFIGURATION ---
 const API_BASE_URL = 'http://localhost:5000/api';
@@ -270,7 +283,61 @@ const HomePage = ({ setView }) => {
         </div>
     );
 };
+const LocationSelectorModal = ({ isOpen, onClose, onLocationSelect }) => {
+    const [loadingLocation, setLoadingLocation] = useState(false);
+    const [locationError, setLocationError] = useState(null);
 
+    const handleUseCurrentLocation = async () => {
+        setLoadingLocation(true);
+        setLocationError(null);
+        try {
+            const position = await new Promise((resolve, reject) => {
+                if (!navigator.geolocation) {
+                    reject(new Error("Geolocation not supported by your browser."));
+                }
+                navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
+            });
+            onLocationSelect({
+                lat: position.coords.latitude,
+                lng: position.coords.longitude,
+            });
+            onClose();
+        } catch (error) {
+            console.error("Error getting location:", error);
+            setLocationError("Could not get location. Please enable browser location services.");
+        } finally {
+            setLoadingLocation(false);
+        }
+    };
+
+    if (!isOpen) return null;
+
+    return (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white p-6 rounded-lg shadow-xl w-96">
+                <h3 className="text-xl font-bold mb-4">Set Donation Location</h3>
+                <p className="mb-4">Use your current location as the pickup point for this donation.</p>
+                {locationError && <p className="text-red-500 mb-4">{locationError}</p>}
+                <div className="flex justify-end space-x-4">
+                    <button
+                        onClick={onClose}
+                        className="px-4 py-2 bg-gray-300 rounded hover:bg-gray-400"
+                        disabled={loadingLocation}
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        onClick={handleUseCurrentLocation}
+                        className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
+                        disabled={loadingLocation}
+                    >
+                        {loadingLocation ? 'Getting Location...' : 'Use Current Location'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
 const Annapurna = () => {
     // --- STATE MANAGEMENT ---
     const [userProfile, setUserProfile] = useState(null);
@@ -283,7 +350,7 @@ const Annapurna = () => {
     const [isBackendConnected, setIsBackendConnected] = useState(false);
     const [initialLoadError, setInitialLoadError] = useState(null);
     // --- ADD THESE NEW STATE VARIABLES ---
-
+    const [newDonationNotes, setNewDonationNotes] = useState('');
 
     // State for the Donor Dashboard tabs
     const [donorActiveTab, setDonorActiveTab] = useState('create'); // 'create', 'active', 'history'
@@ -299,6 +366,11 @@ const Annapurna = () => {
     // --- ADD THIS STATE VARIABLE ---
     const [editingListing, setEditingListing] = useState(null); // Holds the listing being edited
     // --- END ADD ---
+    // ... (existing state declarations) ...
+    const [newDonationLocation, setNewDonationLocation] = useState({ lat: null, lng: null }); // For Donor's input
+    const [receiverCurrentLocation, setReceiverCurrentLocation] = useState({ lat: null, lng: null }); // For Receiver's map center
+    const [showLocationModal, setShowLocationModal] = useState(false); // For a modal to confirm donor location
+    // ...
     // --- FORM STATES ---
     const [receiverSelectedListing, setReceiverSelectedListing] = useState(null);
     const [receiverRatingForm, setReceiverRatingForm] = useState({ rating: 5, review: '' });
@@ -322,7 +394,15 @@ const Annapurna = () => {
 
         try {
             // Fetch Listings always
-            const listingsResPromise = axios.get(`${API_BASE_URL}/listings`);
+            // --- NEW CODE ---
+            // Create the auth config object
+            const config = {};
+            if (userProfile && userProfile.token) {
+                config.headers = { Authorization: `Bearer ${userProfile.token}` };
+            }
+            // Pass the config to the GET request
+            const listingsResPromise = axios.get(`${API_BASE_URL}/listings`, config);
+            // --- END NEW CODE ---
 
             // Fetch Orders based on user role
             let ordersPromise;
@@ -389,7 +469,33 @@ const Annapurna = () => {
     // --- REPLACE the entire first useEffect hook (around line 315) with this ---
 
     // --- REPLACE the entire first useEffect hook with this ---
+    // ... (after fetchData, handleLogin, etc.) ...
 
+    // --- GEOLOCATION HELPER ---
+    const getUserLocation = useCallback(() => {
+        return new Promise((resolve, reject) => {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        resolve({
+                            lat: position.coords.latitude,
+                            lng: position.coords.longitude,
+                        });
+                    },
+                    (error) => {
+                        console.error("Error getting user's location:", error);
+                        reject(error);
+                    },
+                    { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+                );
+            } else {
+                reject(new Error("Geolocation is not supported by this browser."));
+            }
+        });
+    }, []);
+    // --- END GEOLOCATION HELPER ---
+
+    // ... (renderHome, renderLogin, etc. functions) ...
     // Initial Load Effect (Runs only once on mount)
     useEffect(() => {
         // --- Initial Setup ---
@@ -451,27 +557,23 @@ const Annapurna = () => {
     // --- END of the updated second useEffect hook ---
 
     // --- ADD THIS FUNCTION inside Annapurna component ---
+    // --- NEW (CORRECT) CODE ---
     const handleDeleteListing = async (listingId) => {
         if (!userProfile) return setError("Login required.");
 
-        // Simple confirmation for hackathon - replace with modal later
         // eslint-disable-next-line no-restricted-globals
         if (!confirm('Are you sure you want to delete this listing? This cannot be undone.')) {
             return;
         }
 
-        setLoading(true);
-        setError(null);
-        try {
-            // Send DELETE request to the backend
-            await axios.delete(`${API_BASE_URL}/listings/${listingId}`);
-            console.log('Listing deleted successfully!');
-            fetchData(); // Refresh the list
-        } catch (e) {
-            setError(e.response?.data?.message || 'Failed to delete listing.');
-        } finally {
-            setLoading(false);
-        }
+        // --- THIS IS THE FIX ---
+        // Use handleApiAction which correctly sends the token
+        await handleApiAction(
+            'delete',
+            `/listings/${listingId}`, // The API endpoint
+            {},     // No payload for delete
+            'Listing deleted successfully!' // The success message
+        );
     };
     // --- END of handleDeleteListing function ---
     // --- AUTHENTICATION HANDLERS ---
@@ -492,7 +594,37 @@ const Annapurna = () => {
         }
     };
     const handleRegister = (formData, role) => handleAuthAction('register', formData, role);
-    const handleLogin = (formData) => handleAuthAction('login', formData);
+    // --- Inside Annapurna Component ---
+
+    const handleLogin = async (formData) => { // <-- It correctly receives formData
+        setLoading(true);
+        setError(null);
+        try {
+            // FIX: Use formData.email and formData.password
+            const res = await axios.post(`${API_BASE_URL}/auth/login`, {
+                email: formData.email, // Use property from the object
+                password: formData.password // Use property from the object
+            });
+
+            // --- CRUCIAL: Destructure the token from the response ---
+            const { _id, name, role, address, token } = res.data;
+
+            // Prepare the profile to save (including the token)
+            const loggedInUserProfile = { _id, name, role, address, token };
+
+            setUserProfile(loggedInUserProfile);
+            localStorage.setItem('annapurnaUser', JSON.stringify(loggedInUserProfile));
+            setView(res.data.role); // View update is handled by the useEffect
+            fetchData(); // Fetch data immediately on login
+
+        } catch (e) {
+            setError(e.response?.data?.message || e.message || 'Login failed.');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    // --- END of corrected handleLogin function ---
 
 
     const handleLogout = () => {
@@ -506,20 +638,49 @@ const Annapurna = () => {
         setIsBackendConnected(true); // Assume backend is still ok unless initial load fails again
     };
 
-    // --- ACTION HANDLERS (DONOR, RECEIVER, RIDER) ---
     const handleApiAction = async (method, endpoint, payload = {}, successMessage) => {
-        if (!userProfile) {
-            setError("Login required to perform this action.");
-            return; // Prevent action if not logged in
+        if (!userProfile || !userProfile.token) { // <-- Added check for userProfile.token here
+            setError("Login required to perform this action or token missing."); // More specific error
+            return;
         }
         setLoading(true);
         setError(null);
+
         try {
-            await axios[method](`${API_BASE_URL}${endpoint}`, payload);
+            // --- THIS IS THE CRUCIAL CHANGE ---
+            const config = {
+                headers: {
+                    Authorization: `Bearer ${userProfile.token}`
+                }
+            };
+
+            // For GET, DELETE methods, the payload usually goes in the config object itself.
+            // For POST, PUT, PATCH, payload is the second argument, config is the third.
+            // We'll adjust based on method.
+
+            if (method === 'get' || method === 'delete') {
+                // For GET/DELETE, payload might be query params or body, but typically goes in config
+                // For simplicity, we'll assume GET/DELETE don't strictly need a 'payload' object here
+                // or that 'payload' would be part of 'config.params' for GET.
+                // If you use payload for body in DELETE, it would be await axios.delete(url, {data: payload, ...config})
+                // For most cases:
+                await axios[method](`${API_BASE_URL}${endpoint}`, config);
+            } else { // 'post', 'put', 'patch' - methods that typically have a request body
+                await axios[method](`${API_BASE_URL}${endpoint}`, payload, config); // <-- Payload is 2nd, config is 3rd
+            }
+            // --- END CRUCIAL CHANGE ---
+
             console.log(successMessage);
             // Reset forms or close modals specific to action
             if (endpoint === '/listings') { // Create Listing
-
+                // Reset donor form states after successful creation here
+                setNewDonationItems([{ id: Date.now(), itemName: '', quantity: 1, unit: 'servings', ingredients: '' }]);
+                setNewDonationPickupTime('');
+                setNewDonationShelfLife(6);
+                setNewDonationVeg('veg');
+                setNewDonationNotes('');
+                setNewDonationLocation({ lat: null, lng: null }); // Clear location
+                setDonorActiveTab('active'); // Go back to active listings
             } else if (endpoint.includes('/rate')) { // Rate Listing
                 setReceiverSelectedListing(null);
                 setReceiverRatingForm({ rating: 5, review: '' });
@@ -529,7 +690,10 @@ const Annapurna = () => {
             // Always fetch data after a successful action
             fetchData();
         } catch (e) {
-            setError(e.response?.data?.message || `Action failed: ${successMessage}`);
+            // Improved error message for frontend
+            const errorMessage = e.response?.data?.message || `Action failed: ${successMessage}. Network error or unknown server issue.`;
+            setError(errorMessage);
+            console.error("API Action Error:", e.response?.data || e.message); // Log full error details
         } finally {
             setLoading(false);
         }
@@ -550,34 +714,43 @@ const Annapurna = () => {
 
     // --- REPLACE the old handleCreateListing function with this ---
 
-    const handleCreateListing = async () => { // Removed listingData param
+    // --- NEW (CORRECT) CODE ---
+    const handleCreateListing = async () => {
         if (!userProfile) return setError("Login required.");
+
         // Validations
         if (!newDonationItems.some(item => item.itemName.trim() !== '')) return setError("Add at least one item name.");
         if (!newDonationPickupTime.trim()) return setError("Suggest a pickup time.");
         if (!newDonationShelfLife || newDonationShelfLife < 1) return setError("Enter valid shelf life.");
+        // --- LOCATION VALIDATION ---
+        if (!newDonationLocation.lat || !newDonationLocation.lng) {
+            return setError("Please set a valid donation location.");
+        }
 
-        setLoading(true); setError(null);
-        try {
-            const listingData = { // Prepare payload
-                donorId: userProfile._id, donorName: userProfile.name, address: userProfile.address,
-                foodItem: newDonationItems[0]?.itemName || 'Mixed Items',
-                quantity: newDonationItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0),
-                ingredients: newDonationItems.map(item => item.ingredients || item.itemName).filter(Boolean).join(', '),
-                veg: newDonationVeg, pickupTimeWindow: newDonationPickupTime,
-                shelfLifeHours: parseInt(newDonationShelfLife, 10),
-                hoursOld: 1 // Keep placeholder or add form field if needed
-            };
-            await axios.post(`${API_BASE_URL}/listings`, listingData); // Call API
-            console.log('Donation successfully listed!');
-            // Reset form
-            setNewDonationItems([{ id: Date.now(), itemName: '', quantity: 1, unit: 'servings', ingredients: '' }]);
-            setNewDonationPickupTime(''); setNewDonationVeg('veg'); setNewDonationShelfLife(6);
-            setDonorActiveTab('active'); // Switch tab
-            fetchData(); // Refresh
-        } catch (e) {
-            setError(e.response?.data?.message || 'Listing failed.');
-        } finally { setLoading(false); }
+        // Prepare payload
+        const listingData = {
+            // The backend gets donorId, donorName, and address from the token (req.user)
+            // We only need to send the food details
+            items: newDonationItems, // Send the full items array
+            pickupTimeWindow: newDonationPickupTime,
+            shelfLifeHours: parseInt(newDonationShelfLife, 10),
+            veg: newDonationVeg,
+            notes: newDonationNotes,
+            location: { // Send the location in GeoJSON format
+                type: 'Point',
+                coordinates: [newDonationLocation.lng, newDonationLocation.lat] // [Longitude, Latitude]
+            }
+        };
+
+        // --- THIS IS THE FIX ---
+        // Use handleApiAction which correctly sends the token
+        await handleApiAction(
+            'post',
+            '/listings', // The API endpoint
+            listingData,   // The payload
+            'Donation successfully listed!' // The success message
+        );
+        // The reset logic is now inside handleApiAction
     };
     // --- END of updated handleCreateListing function ---
 
@@ -626,7 +799,8 @@ const Annapurna = () => {
 
 
         const filtered = {
-            donorListings: listings.filter(l => l.donorId === userProfile._id),
+            // --- THIS IS THE FIX ---
+            donorListings: listings.filter(l => (l.donor?._id || l.donor) === userProfile._id),
             // Rider sees orders waiting for ANY rider
             availableOrders: orders.filter(o => o.status === 'awaiting_rider'),
             // Rider sees orders they personally accepted AND are picked up
@@ -775,7 +949,9 @@ const Annapurna = () => {
         const inactiveTabClass = "bg-gray-100 text-gray-500 hover:bg-gray-200 hover:text-gray-700";
         const cardClass = "bg-white p-6 rounded-xl shadow-lg hover:shadow-xl transition duration-300 border border-gray-100";
         const premiumBadgeClass = "absolute top-3 right-3 bg-gradient-to-r from-yellow-400 to-amber-500 text-white text-xs font-bold px-2 py-0.5 rounded-full shadow";
+        // --- Location Selector Modal Component ---
 
+        // -
         return (
             <div className="container mx-auto p-4 md:p-8 pt-24 min-h-screen bg-gradient-to-br from-blue-50 via-white to-green-50">
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 px-4">
@@ -801,6 +977,25 @@ const Annapurna = () => {
                                     <div><label className="block text-sm font-medium mb-1">Dietary</label><select value={newDonationVeg} onChange={(e) => setNewDonationVeg(e.target.value)} required className="w-full p-3 border rounded-lg bg-white focus:ring-blue-500"><option value="veg">Veg 🌱</option> <option value="non-veg">Non-Veg 🍖</option> <option value="mixed">Mixed</option></select></div>
                                     <div><label htmlFor="shelfLife" className="block text-sm font-medium mb-1">Good For (Hours) <span className="text-red-500">*</span></label><input type="number" id="shelfLife" value={newDonationShelfLife} onChange={(e) => setNewDonationShelfLife(e.target.value)} min="1" max="48" required placeholder="e.g., 6" className="w-full p-3 border rounded-lg focus:ring-blue-500" /><p className="text-xs text-gray-500 mt-1">Approx hours food stays fresh.</p></div>
                                     <div className="space-y-4"><h4 className="text-lg font-semibold">Items</h4>{newDonationItems.map((item) => (<div key={item.id} className="p-4 border rounded-lg bg-gray-50 relative animate-fade-in"><div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-center"><input type="text" placeholder="Item Name" value={item.itemName} onChange={(e) => handleItemChange(item.id, 'itemName', e.target.value)} required className="p-2 border rounded md:col-span-2 focus:ring-blue-500" /><div className="flex space-x-2"><input type="number" placeholder="Qty" min="1" value={item.quantity} onChange={(e) => handleItemChange(item.id, 'quantity', e.target.value)} required className="p-2 border rounded w-1/2 focus:ring-blue-500" /><select value={item.unit} onChange={(e) => handleItemChange(item.id, 'unit', e.target.value)} className="p-2 border rounded w-1/2 bg-white focus:ring-blue-500"><option value="servings">servings</option> <option value="pcs">pcs</option> <option value="kg">kg</option> <option value="ltr">ltr</option> <option value="box">box</option></select></div></div><textarea placeholder="Ingredients (optional)" value={item.ingredients} onChange={(e) => handleItemChange(item.id, 'ingredients', e.target.value)} className="w-full p-2 border rounded mt-2 focus:ring-blue-500" rows="1"></textarea>{newDonationItems.length > 1 && (<button type="button" onClick={() => removeItem(item.id)} className="absolute top-2 right-2 text-red-400 hover:text-red-600" aria-label="Remove"><svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" /></svg></button>)}</div>))} <button type="button" onClick={addItem} className="text-sm text-blue-600 hover:text-blue-800 font-semibold flex items-center"><svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-1" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z" clipRule="evenodd" /></svg>Add Item</button></div>
+                                    {/* --- ADD THIS LOCATION INPUT SECTION --- */}
+                                    <div className="mb-4">
+                                        <label className="block text-gray-700 text-sm font-bold mb-2">
+                                            Donation Location:
+                                        </label>
+                                        {newDonationLocation.lat && newDonationLocation.lng ? (
+                                            <p className="text-green-600">Location Set: Lat {newDonationLocation.lat.toFixed(4)}, Lng {newDonationLocation.lng.toFixed(4)}</p>
+                                        ) : (
+                                            <p className="text-red-500">Location Not Set</p>
+                                        )}
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowLocationModal(true)} // This will open a modal or prompt for location
+                                            className="mt-2 bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
+                                        >
+                                            Set Donation Location
+                                        </button>
+                                    </div>
+                                    {/* --- END ADD LOCATION INPUT SECTION --- */}
                                     <button type="submit" disabled={loading || dataLoading} className="w-full mt-6 bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 text-white font-bold py-3 rounded-lg disabled:opacity-50"> {loading ? 'Creating...' : 'Submit'} </button>
                                 </form>
                             </div>
@@ -895,11 +1090,7 @@ const Annapurna = () => {
         const handleRatingChange = (e) => setRatingForm({ ...ratingForm, [e.target.name]: e.target.value });
         const submitRating = (listingId) => { handleRatingSubmission(listingId, parseInt(ratingForm.rating), ratingForm.review); };
 
-        const renderMap = () => (
-            <div className="bg-gray-200 h-96 rounded-xl flex items-center justify-center text-gray-600 border border-gray-400">
-                <p>Simulated Map. Delivery: <span className="font-semibold">{userProfile?.address || 'N/A'}</span></p>
-            </div>
-        );
+
 
         const ListingCard = ({ listing }) => (
             <div className="bg-white p-4 rounded-lg shadow-xl border-l-4 border-blue-500 hover:shadow-2xl transition duration-300 cursor-pointer" onClick={() => setSelectedListing(listing)}>
@@ -968,11 +1159,56 @@ const Annapurna = () => {
             <div className="container mx-auto p-4 pt-8 sm:pt-12 md:pt-20">
                 {Modal()}
                 <h2 className="text-3xl font-bold text-gray-800 mb-6 border-b pb-2">Receiver Dashboard</h2>
-                {error && <p className="text-red-500 mb-4">{error}</p>}
+                {/* --- ADD MAP CONTAINER HERE (Temporarily) --- */}
+
+                {/* --- END MAP CONTAINER --- */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                     <div className="lg:col-span-2">
                         <h3 className="text-xl font-semibold mb-4">Live Food Map</h3>
-                        {renderMap()}
+                        {/* --- PASTE THIS NEW, CORRECT CODE --- */}
+                        <div className="bg-white p-4 rounded-lg shadow-md mb-6 h-96 relative z-10"> {/* <-- ADDED relative z-10 */}
+                            <MapContainer
+                                center={[13.6288, 79.4192]} // Centered on Tirupati
+                                zoom={13}
+                                scrollWheelZoom={true}
+                                style={{ height: '100%', width: '100%', borderRadius: '8px' }}
+                            >
+                                <TileLayer
+                                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                                />
+
+                                {/* Loop over available food and create a marker for each */}
+                                {availableFood.map(listing => {
+                                    // MongoDB stores [Longitude, Latitude]
+                                    // Leaflet needs [Latitude, Longitude]
+                                    // So we must reverse them!
+                                    const position = [
+                                        listing.location.coordinates[1], // Latitude
+                                        listing.location.coordinates[0]  // Longitude
+                                    ];
+
+                                    return (
+                                        <Marker key={listing._id} position={position}>
+                                            <Popup>
+                                                <div className="font-sans">
+                                                    <h4 className="font-bold text-md">{listing.items[0].itemName}</h4>
+                                                    <p>{listing.items.length} item(s) available.</p>
+                                                    <p>{listing.veg === 'veg' ? '🌱' : '🍖'}</p>
+                                                    <button
+                                                        onClick={() => setSelectedListing(listing)}
+                                                        className="w-full mt-2 bg-blue-600 text-white py-1 px-2 rounded-lg font-bold text-xs"
+                                                    >
+                                                        View & Claim
+                                                    </button>
+                                                </div>
+                                            </Popup>
+                                        </Marker>
+                                    );
+                                })}
+                            </MapContainer>
+                        </div>
+                        {/* --- END OF NEW CODE --- */}
                         <h3 className="text-xl font-semibold my-4">Your Orders Status</h3>
                         <div className="space-y-3">
                             {dataLoading && myClaims.length === 0 && <p className="text-gray-500 animate-pulse">Loading orders...</p>}
@@ -1149,6 +1385,13 @@ const Annapurna = () => {
         <div className="min-h-screen bg-gray-50 font-sans animate-fade-in">
             <Header />
             <main className="pb-8">
+                {/* --- ADD THIS MODAL RENDER CALL --- */}
+                <LocationSelectorModal
+                    isOpen={showLocationModal} // Controls whether the modal is visible (from Annapurna's state)
+                    onClose={() => setShowLocationModal(false)} // Function to close the modal
+                    onLocationSelect={setNewDonationLocation} // Function to pass selected location back to Annapurna's state
+                />
+                {/* --- END MODAL RENDER CALL --- */}
                 {renderView()}
             </main>
             <footer className="text-center p-4 text-xs text-gray-400 border-t mt-8">
@@ -1156,6 +1399,12 @@ const Annapurna = () => {
             </footer>
         </div>
     );
+    // --- Location Selector Modal Component (Place this OUTSIDE the Annapurna function,
+    //     e.g., near the bottom of Annapurna.jsx, before the 'export default' line) ---
+
+
+
+    // --- END Location Selector Modal Component ---
 };
 
 export default Annapurna;
