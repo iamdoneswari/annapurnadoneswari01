@@ -4,10 +4,44 @@ import logo from './assets/annapurna-logo.png'; // <-- Does 'annapurna-logo.png'
 import donorImage from './assets/donor-food-donation.png'; // Make sure filename matches yours!
 import receiverImage from './assets/receiver-meal.png';
 import riderImage from './assets/rider-delivery.png';
-import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, useMap, Polyline } from 'react-leaflet';
 import L from 'leaflet'; // Import Leaflet library itself
 import 'leaflet/dist/leaflet.css';
+import { OpenStreetMapProvider, GeoSearchControl } from 'leaflet-geosearch';
+import 'leaflet-geosearch/dist/geosearch.css'; // Import the CSS
+// --- Paste this function near the top, after imports ---
 
+/**
+ * Calculates the distance between two points using the Haversine formula.
+ * @param {number} lat1 Latitude of point 1
+ * @param {number} lon1 Longitude of point 1
+ * @param {number} lat2 Latitude of point 2
+ * @param {number} lon2 Longitude of point 2
+ * @returns {number} Distance in kilometers
+ */
+function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
+    if (lat1 == null || lon1 == null || lat2 == null || lon2 == null) {
+        return null; // Return null if any coordinate is missing
+    }
+    const R = 6371; // Radius of the earth in km
+    const dLat = deg2rad(lat2 - lat1);
+    const dLon = deg2rad(lon2 - lon1);
+    const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const d = R * c; // Distance in km
+    return d;
+}
+
+function deg2rad(deg) {
+    return deg * (Math.PI / 180);
+}
+
+// --- END Distance Function ---
+
+// const Annapurna = () => { ... rest of your component
 // --- FIX for Leaflet Icons ---
 // This fixes the common issue where markers don't appear
 delete L.Icon.Default.prototype._getIconUrl;
@@ -284,28 +318,91 @@ const HomePage = ({ setView }) => {
         </div>
     );
 };
+// --- PASTE THIS ENHANCED LocationSelectorModal near the bottom of Annapurna.jsx ---
+// (Replace the old LocationSelectorModal entirely)
+
 const LocationSelectorModal = ({ isOpen, onClose, onLocationSelect }) => {
+    const [searchQuery, setSearchQuery] = useState('');
+    const [suggestions, setSuggestions] = useState([]);
+    const [loadingSuggestions, setLoadingSuggestions] = useState(false);
     const [loadingLocation, setLoadingLocation] = useState(false);
     const [locationError, setLocationError] = useState(null);
 
+    // Geocoding provider (OpenStreetMap)
+    const provider = useMemo(() => new OpenStreetMapProvider(), []); // Memoize provider
+
+    // Debounce timer reference
+    const debounceTimeoutRef = useRef(null);
+
+    // Fetch suggestions when searchQuery changes (with debounce)
+    useEffect(() => {
+        // Clear previous timeout if user types again quickly
+        if (debounceTimeoutRef.current) {
+            clearTimeout(debounceTimeoutRef.current);
+        }
+
+        if (searchQuery.trim().length < 3) { // Only search if query is long enough
+            setSuggestions([]);
+            setLoadingSuggestions(false);
+            return;
+        }
+
+        setLoadingSuggestions(true);
+        setLocationError(null);
+
+        // Set a new timeout
+        debounceTimeoutRef.current = setTimeout(async () => {
+            try {
+                const results = await provider.search({ query: searchQuery });
+                setSuggestions(results || []);
+            } catch (error) {
+                console.error("Geocoding search error:", error);
+                setLocationError("Failed to fetch address suggestions.");
+                setSuggestions([]);
+            } finally {
+                setLoadingSuggestions(false);
+            }
+        }, 500); // Wait 500ms after user stops typing
+
+        // Cleanup function to clear timeout if component unmounts or query changes again
+        return () => {
+            if (debounceTimeoutRef.current) {
+                clearTimeout(debounceTimeoutRef.current);
+            }
+        };
+    }, [searchQuery, provider]); // Re-run effect when searchQuery or provider changes
+
+    // Handle selecting a suggestion
+    const handleSelectSuggestion = (suggestion) => {
+        console.log("Selected:", suggestion);
+        onLocationSelect({
+            lat: suggestion.y, // Latitude from suggestion
+            lng: suggestion.x, // Longitude from suggestion
+            addressString: suggestion.label // The full address text
+        });
+        onClose(); // Close modal after selection
+    };
+
+    // Handle using current location
     const handleUseCurrentLocation = async () => {
         setLoadingLocation(true);
         setLocationError(null);
         try {
             const position = await new Promise((resolve, reject) => {
                 if (!navigator.geolocation) {
-                    reject(new Error("Geolocation not supported by your browser."));
+                    reject(new Error("Geolocation not supported."));
                 }
                 navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
             });
             onLocationSelect({
                 lat: position.coords.latitude,
                 lng: position.coords.longitude,
+                addressString: "Current Location (Approx.)" // Provide a default string
             });
             onClose();
         } catch (error) {
             console.error("Error getting location:", error);
-            setLocationError("Could not get location. Please enable browser location services.");
+            setLocationError("Could not get location. Enable browser location services.");
         } finally {
             setLoadingLocation(false);
         }
@@ -314,31 +411,70 @@ const LocationSelectorModal = ({ isOpen, onClose, onLocationSelect }) => {
     if (!isOpen) return null;
 
     return (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white p-6 rounded-lg shadow-xl w-96">
-                <h3 className="text-xl font-bold mb-4">Set Donation Location</h3>
-                <p className="mb-4">Use your current location as the pickup point for this donation.</p>
-                {locationError && <p className="text-red-500 mb-4">{locationError}</p>}
-                <div className="flex justify-end space-x-4">
-                    <button
-                        onClick={onClose}
-                        className="px-4 py-2 bg-gray-300 rounded hover:bg-gray-400"
-                        disabled={loadingLocation}
-                    >
-                        Cancel
-                    </button>
-                    <button
-                        onClick={handleUseCurrentLocation}
-                        className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
-                        disabled={loadingLocation}
-                    >
-                        {loadingLocation ? 'Getting Location...' : 'Use Current Location'}
-                    </button>
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-4 animate-fade-in">
+            <div className="bg-white p-6 rounded-lg shadow-xl w-full max-w-lg relative"> {/* Increased max-width */}
+                <button onClick={onClose} className="absolute top-2 right-3 text-gray-400 hover:text-gray-600">
+                    &times; {/* Simple close button */}
+                </button>
+                <h3 className="text-xl font-bold mb-4 text-gray-800">Set Donation Pickup Location</h3>
+
+                {/* Manual Address Search */}
+                <div className="mb-4 relative">
+                    <label htmlFor="addressSearch" className="block text-sm font-medium text-gray-700 mb-1">Search for Address:</label>
+                    <input
+                        id="addressSearch"
+                        type="text"
+                        placeholder="Start typing address..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                    />
+                    {loadingSuggestions && <p className="text-xs text-blue-500 mt-1 animate-pulse">Searching...</p>}
+                    {/* Suggestions Dropdown */}
+                    {suggestions.length > 0 && (
+                        <ul className="absolute z-10 w-full bg-white border border-gray-300 rounded-b-lg shadow-lg max-h-48 overflow-y-auto mt-1">
+                            {suggestions.map((suggestion, index) => (
+                                <li
+                                    key={suggestion.raw.place_id || index} // Use place_id if available
+                                    onClick={() => handleSelectSuggestion(suggestion)}
+                                    className="p-3 hover:bg-blue-100 cursor-pointer text-sm"
+                                >
+                                    {suggestion.label}
+                                </li>
+                            ))}
+                        </ul>
+                    )}
                 </div>
+
+                <p className="text-center text-gray-500 my-4 text-sm font-semibold">-- OR --</p>
+
+                {/* Use Current Location Button */}
+                <button
+                    onClick={handleUseCurrentLocation}
+                    className="w-full px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 font-semibold flex items-center justify-center disabled:opacity-60"
+                    disabled={loadingLocation || loadingSuggestions}
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                    {loadingLocation ? 'Getting Location...' : 'Use My Current Location'}
+                </button>
+
+                {locationError && <p className="text-red-500 mt-4 text-sm text-center">{locationError}</p>}
+
+                <button
+                    onClick={onClose}
+                    className="mt-6 w-full text-sm text-center text-gray-500 hover:text-gray-700"
+                    disabled={loadingLocation || loadingSuggestions}
+                >
+                    Cancel
+                </button>
             </div>
         </div>
     );
 };
+// --- END of ENHANCED LocationSelectorModal ---
 const Annapurna = () => {
     // --- STATE MANAGEMENT ---
     const [userProfile, setUserProfile] = useState(null);
@@ -367,15 +503,34 @@ const Annapurna = () => {
     // --- ADD THIS STATE VARIABLE ---
     const [editingListing, setEditingListing] = useState(null); // Holds the listing being edited
     // --- END ADD ---
+    // --- ADD THESE STATES ---
+    const [hoveredListingId, setHoveredListingId] = useState(null); // ID of the card being hovered
+    const [routeLinePositions, setRouteLinePositions] = useState([]); // Array of [lat, lng] pairs for the line
+    // --- END ADD ---
+    // --- ADD THESE STATES for Filtering ---
+    const [nearbySearchQuery, setNearbySearchQuery] = useState(''); // For the search bar input
+    const [dietaryFilter, setDietaryFilter] = useState('all'); // 'all', 'veg', 'non-veg'
+    // --- END ADD ---
     // ... (existing state declarations) ...
-    const [newDonationLocation, setNewDonationLocation] = useState({ lat: null, lng: null }); // For Donor's input
+    const [newDonationLocation, setNewDonationLocation] = useState({
+        lat: null,
+        lng: null,
+        addressString: '' // Add addressString
+    });
     const [receiverCurrentLocation, setReceiverCurrentLocation] = useState({ lat: null, lng: null }); // For Receiver's map center
     const [showLocationModal, setShowLocationModal] = useState(false); // For a modal to confirm donor location
     // ...
     // --- FORM STATES ---
     const [receiverSelectedListing, setReceiverSelectedListing] = useState(null);
     const [receiverRatingForm, setReceiverRatingForm] = useState({ rating: 5, review: '' });
-
+    // --- ADD THIS STATE ---
+    const [receiverLocation, setReceiverLocation] = useState({
+        lat: null,
+        lng: null,
+        addressString: 'Set Your Location' // Default text
+    });
+    const [showReceiverLocationModal, setShowReceiverLocationModal] = useState(false);
+    // --- END ADD ---
     // --- DATA FETCHING ---
     const fetchData = useCallback(async (isInitialLoad = false) => {
 
@@ -664,6 +819,7 @@ const Annapurna = () => {
                 // or that 'payload' would be part of 'config.params' for GET.
                 // If you use payload for body in DELETE, it would be await axios.delete(url, {data: payload, ...config})
                 // For most cases:
+
                 await axios[method](`${API_BASE_URL}${endpoint}`, config);
             } else { // 'post', 'put', 'patch' - methods that typically have a request body
                 await axios[method](`${API_BASE_URL}${endpoint}`, payload, config); // <-- Payload is 2nd, config is 3rd
@@ -679,9 +835,10 @@ const Annapurna = () => {
                 setNewDonationShelfLife(6);
                 setNewDonationVeg('veg');
                 setNewDonationNotes('');
-                setNewDonationLocation({ lat: null, lng: null }); // Clear location
+                setNewDonationLocation({ lat: null, lng: null, addressString: '' }); // <-- ADDED THIS RESET LINE
                 setDonorActiveTab('active'); // Go back to active listings
             } else if (endpoint.includes('/rate')) { // Rate Listing
+                // ...else if (endpoint.includes('/rate')) { // Rate Listing
                 setReceiverSelectedListing(null);
                 setReceiverRatingForm({ rating: 5, review: '' });
             } else if (endpoint === '/orders/claim') { // Claim Food
@@ -736,6 +893,7 @@ const Annapurna = () => {
             shelfLifeHours: parseInt(newDonationShelfLife, 10),
             veg: newDonationVeg,
             notes: newDonationNotes,
+            address: newDonationLocation.addressString, // <-- ADD THIS LINE
             location: { // Send the location in GeoJSON format
                 type: 'Point',
                 coordinates: [newDonationLocation.lng, newDonationLocation.lat] // [Longitude, Latitude]
@@ -814,7 +972,31 @@ const Annapurna = () => {
         return filtered;
     }, [listings, orders, userProfile, view]);
 
+    // --- PASTE THE FILTERED LISTINGS useMemo HERE ---
+    const filteredListings = useMemo(() => {
+        // Get the available listings from dataForCurrentRole
+        const allAvailableListings = dataForCurrentRole.availableListings || []; // Add default empty array
 
+        return allAvailableListings.filter(listing => {
+            // Dietary Filter
+            if (dietaryFilter !== 'all' && listing.veg !== dietaryFilter) {
+                return false;
+            }
+            // Search Query Filter
+            if (nearbySearchQuery.trim() !== '') {
+                const query = nearbySearchQuery.toLowerCase();
+                const itemMatch = listing.items?.some(item =>
+                    item.itemName.toLowerCase().includes(query)
+                );
+                if (!itemMatch) {
+                    return false;
+                }
+            }
+            return true;
+        });
+        // Dependencies: depends on the main data, search query, and filter state
+    }, [dataForCurrentRole.availableListings, nearbySearchQuery, dietaryFilter]);
+    // --- END PASTE ---
     // --- UI COMPONENTS ---
 
     // --- Inside the Annapurna component ---
@@ -823,80 +1005,66 @@ const Annapurna = () => {
 
     // --- Inside the Annapurna component ---
 
+    // --- START: REPLACE Existing Header function ---
     const Header = () => {
-        // Only render the standard header if NOT on the home view when logged out
+        // Hide this header if logged out AND on the home view
         if (view === 'home' && !userProfile) {
-            return null; // The HomePage component renders its own header
+            return null; // HomePage component renders its own header/nav
         }
 
-        const homeTargetView = userProfile ? userProfile.role : 'home';
+        // Determine where the logo/name click should navigate
+        const homeTargetView = userProfile ? userProfile.role : 'home'; // Go to user's dashboard if logged in, else home
 
         return (
-            <div className="bg-blue-600 shadow-lg p-4 flex justify-between items-center sticky top-0 w-full z-10">
+            // Header bar styling
+            <div className="bg-gradient-to-r from-blue-600 to-indigo-700 shadow-lg p-3 sm:p-4 flex justify-between items-center sticky top-0 w-full z-30"> {/* Increased z-index */}
+
+                {/* Logo and Name */}
                 <div
-                    className="flex items-center cursor-pointer"
-                    onClick={() => { setView(homeTargetView); setError(null); }}
+                    className="flex items-center cursor-pointer transition-transform transform hover:scale-105" // Added hover effect
+                    onClick={() => { setView(homeTargetView); setError(null); }} // Navigate on click
+                    title={`Go to ${userProfile ? 'Dashboard' : 'Home'}`} // Tooltip
                 >
-                    {/* --- UPDATED LOGO: Added circular classes --- */}
-                    <img src={logo} alt="Annapurna Logo" className="h-9 w-9 rounded-full object-cover mr-2" /> {/* <-- UPDATED */}
-                    <h1 className="text-3xl font-extrabold text-white">
+                    <img src={logo} alt="Annapurna Logo" className="h-8 w-8 sm:h-9 sm:w-9 rounded-full object-cover mr-2 shadow-md" />
+                    <h1 className="text-2xl sm:text-3xl font-extrabold text-white">
                         Annapurna
                     </h1>
                 </div>
 
-                {!isBackendConnected && initialLoadError && (
-                    <span className="text-xs text-red-200 animate-pulse hidden sm:inline">Connecting...</span>
-                )}
-                {isBackendConnected && dataLoading && !initialLoadError && (
-                    <span className="text-xs text-blue-200 animate-pulse hidden sm:inline">Updating...</span>
-                )}
-
-
+                {/* Right side content: User info & Logout */}
                 <div className="flex space-x-3 items-center">
-                    {/* --- USER PROFILE INFORMATION --- */}
-                    {userProfile && (
-                        <div className="flex items-baseline space-x-1 text-white text-sm my-auto hidden md:flex font-semibold"> {/* Use a div to group, flex for alignment */}
-                            <h2 className="text-lg font-bold text-gray-100 mr-1">Welcome,</h2> {/* Enhanced welcome text */}
-                            <span className="text-blue-200">{userProfile.name}</span> {/* Name in a slightly different color */}
-                            <span className="text-gray-300">({userProfile.role.toUpperCase()})</span> {/* Role text */}
-                        </div>
-                    )}
+                    {/* Display User Name and Role (Optional, uncomment if desired) */}
+                    {/* {userProfile && (
+                        <div className="hidden md:flex items-baseline space-x-1 text-white text-sm my-auto font-semibold">
+                             <span className="text-blue-200">{userProfile.name}</span>
+                             <span className="text-gray-300">({userProfile.role.toUpperCase()})</span>
+                         </div>
+                     )} */}
 
-                    {/* --- HOME/DASHBOARD BUTTON (when logged in) --- */}
+                    {/* Logout Button (Only shown when logged in) */}
                     {userProfile && (
                         <button
-                            onClick={() => { setView(homeTargetView); setError(null); }}
-                            className="bg-white hover:bg-gray-100 text-blue-600 font-semibold py-2 px-4 rounded-full transition duration-300 shadow-md hidden sm:flex items-center transform hover:scale-105" // Added hover scale
-                            aria-label="Go to Dashboard"
-                        >
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-                            </svg>
-                            Home
-                        </button>
-                    )}
-
-                    {/* --- LOGOUT / LOGIN BUTTON --- */}
-                    {userProfile ? (
-                        <button
-                            onClick={handleLogout}
-                            className="bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-full transition duration-300 shadow-md transform hover:scale-105" // Added hover scale
+                            onClick={handleLogout} // Call logout function on click
+                            className="bg-red-500 hover:bg-red-600 text-white font-semibold py-1.5 px-3 sm:py-2 sm:px-4 rounded-full transition duration-300 shadow-md transform hover:scale-105 text-xs sm:text-sm" // Adjusted padding/size
                         >
                             Logout
                         </button>
-                    ) : (
-                        view !== 'login' && !view.startsWith('register') && view !== 'home' ?
-                            <button
-                                onClick={() => { setView('login'); setError(null); }}
-                                className="bg-white hover:bg-gray-100 text-blue-600 font-semibold py-2 px-4 rounded-full transition duration-300 shadow-md transform hover:scale-105" // Added hover scale
-                            >
-                                Login
-                            </button> : null
+                    )}
+
+                    {/* Show Login Button if NOT logged in AND NOT on login/register/home views */}
+                    {!userProfile && view !== 'login' && !view.startsWith('register') && view !== 'home' && (
+                        <button
+                            onClick={() => { setView('login'); setError(null); }}
+                            className="bg-white hover:bg-gray-100 text-blue-600 font-semibold py-1.5 px-3 sm:py-2 sm:px-4 rounded-full transition duration-300 shadow-md transform hover:scale-105 text-xs sm:text-sm"
+                        >
+                            Login
+                        </button>
                     )}
                 </div>
             </div>
         );
     };
+    // --- END: REPLACE Existing Header function ---
     // --- REPLACE the old renderDonorView function with this ---
 
     // --- REPLACE the old renderDonorView function with this ---
@@ -978,23 +1146,30 @@ const Annapurna = () => {
                                     <div><label htmlFor="shelfLife" className="block text-sm font-medium mb-1">Good For (Hours) <span className="text-red-500">*</span></label><input type="number" id="shelfLife" value={newDonationShelfLife} onChange={(e) => setNewDonationShelfLife(e.target.value)} min="1" max="48" required placeholder="e.g., 6" className="w-full p-3 border rounded-lg focus:ring-blue-500" /><p className="text-xs text-gray-500 mt-1">Approx hours food stays fresh.</p></div>
                                     <div className="space-y-4"><h4 className="text-lg font-semibold">Items</h4>{newDonationItems.map((item) => (<div key={item.id} className="p-4 border rounded-lg bg-gray-50 relative animate-fade-in"><div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-center"><input type="text" placeholder="Item Name" value={item.itemName} onChange={(e) => handleItemChange(item.id, 'itemName', e.target.value)} required className="p-2 border rounded md:col-span-2 focus:ring-blue-500" /><div className="flex space-x-2"><input type="number" placeholder="Qty" min="1" value={item.quantity} onChange={(e) => handleItemChange(item.id, 'quantity', e.target.value)} required className="p-2 border rounded w-1/2 focus:ring-blue-500" /><select value={item.unit} onChange={(e) => handleItemChange(item.id, 'unit', e.target.value)} className="p-2 border rounded w-1/2 bg-white focus:ring-blue-500"><option value="servings">servings</option> <option value="pcs">pcs</option> <option value="kg">kg</option> <option value="ltr">ltr</option> <option value="box">box</option></select></div></div><textarea placeholder="Ingredients (optional)" value={item.ingredients} onChange={(e) => handleItemChange(item.id, 'ingredients', e.target.value)} className="w-full p-2 border rounded mt-2 focus:ring-blue-500" rows="1"></textarea>{newDonationItems.length > 1 && (<button type="button" onClick={() => removeItem(item.id)} className="absolute top-2 right-2 text-red-400 hover:text-red-600" aria-label="Remove"><svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" /></svg></button>)}</div>))} <button type="button" onClick={addItem} className="text-sm text-blue-600 hover:text-blue-800 font-semibold flex items-center"><svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-1" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z" clipRule="evenodd" /></svg>Add Item</button></div>
                                     {/* --- ADD THIS LOCATION INPUT SECTION --- */}
+                                    {/* --- MODIFY THIS LOCATION DISPLAY SECTION --- */}
                                     <div className="mb-4">
                                         <label className="block text-gray-700 text-sm font-bold mb-2">
                                             Donation Location:
                                         </label>
-                                        {newDonationLocation.lat && newDonationLocation.lng ? (
+                                        {newDonationLocation.addressString ? ( // Check for addressString first
+                                            <p className="text-green-700 bg-green-100 p-2 rounded-md text-sm">
+                                                <span className="font-semibold">Selected:</span> {newDonationLocation.addressString}
+                                                <span className="text-xs text-gray-500 block">(Lat: {newDonationLocation.lat?.toFixed(4)}, Lng: {newDonationLocation.lng?.toFixed(4)})</span>
+                                            </p>
+                                        ) : newDonationLocation.lat && newDonationLocation.lng ? ( // Fallback for just coords
                                             <p className="text-green-600">Location Set: Lat {newDonationLocation.lat.toFixed(4)}, Lng {newDonationLocation.lng.toFixed(4)}</p>
                                         ) : (
                                             <p className="text-red-500">Location Not Set</p>
                                         )}
                                         <button
                                             type="button"
-                                            onClick={() => setShowLocationModal(true)} // This will open a modal or prompt for location
-                                            className="mt-2 bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
+                                            onClick={() => setShowLocationModal(true)}
+                                            className="mt-2 bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline text-sm"
                                         >
-                                            Set Donation Location
+                                            {newDonationLocation.lat ? 'Change Location' : 'Set Donation Location'}
                                         </button>
                                     </div>
+                                    {/* --- END MODIFIED LOCATION DISPLAY --- */}
                                     {/* --- END ADD LOCATION INPUT SECTION --- */}
                                     <button type="submit" disabled={loading || dataLoading} className="w-full mt-6 bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 text-white font-bold py-3 rounded-lg disabled:opacity-50"> {loading ? 'Creating...' : 'Submit'} </button>
                                 </form>
@@ -1094,7 +1269,7 @@ const Annapurna = () => {
 
 
     const renderReceiverView = () => {
-        const availableFood = dataForCurrentRole.availableListings;
+
         const myClaims = dataForCurrentRole.receiverOrders;
         const selectedListing = receiverSelectedListing;
         const setSelectedListing = setReceiverSelectedListing;
@@ -1102,59 +1277,123 @@ const Annapurna = () => {
         const setRatingForm = setReceiverRatingForm;
         const handleRatingChange = (e) => setRatingForm({ ...ratingForm, [e.target.name]: e.target.value });
         const submitRating = (listingId) => { handleRatingSubmission(listingId, parseInt(ratingForm.rating), ratingForm.review); };
+        const allAvailableListings = dataForCurrentRole.availableListings; // Get all listings first
+        // --- ListingCard with TIMER within renderReceiverView ---
+        // --- FINAL ListingCard with TIMER, DISTANCE & HOVER within renderReceiverView ---
+        // --- Updated ListingCard Design ---
+        // --- FINAL ListingCard with All Info ---
 
 
-        // --- ENHANCED ListingCard within renderReceiverView ---
+        // Apply filters
+
+
+        // Use the filtered list for display
+        const availableFood = filteredListings;
         const ListingCard = ({ listing }) => {
-            // Safely access data
+            // State and Effects for Timer and Distance
+            const [timeLeft, setTimeLeft] = useState('Calculating...');
+            const [isExpired, setIsExpired] = useState(false);
+            const [distance, setDistance] = useState(null);
+
+            // --- Timer Effect ---
+            useEffect(() => {
+                if (!listing.createdAt || typeof listing.shelfLifeHours !== 'number' || listing.shelfLifeHours <= 0) {
+                    console.error('Timer Error: Invalid createdAt or shelfLifeHours for listing', listing._id); setTimeLeft('Invalid Data'); setIsExpired(true); return;
+                }
+                let timerId = null;
+                const calculateRemainingTime = () => {
+                    const expirationTime = new Date(listing.createdAt).getTime() + (listing.shelfLifeHours * 60 * 60 * 1000);
+                    const now = new Date().getTime(); const difference = expirationTime - now;
+                    if (difference <= 0) { setTimeLeft('Expired'); setIsExpired(true); if (timerId) clearInterval(timerId); return; }
+                    const hours = Math.floor(difference / (1000 * 60 * 60)); const minutes = Math.floor((difference / (1000 * 60)) % 60); const seconds = Math.floor((difference / 1000) % 60);
+                    setTimeLeft(`${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`); setIsExpired(false);
+                };
+                calculateRemainingTime();
+                if (new Date(listing.createdAt).getTime() + (listing.shelfLifeHours * 60 * 60 * 1000) > new Date().getTime()) { timerId = setInterval(calculateRemainingTime, 1000); }
+                return () => { if (timerId) clearInterval(timerId); };
+            }, [listing.createdAt, listing.shelfLifeHours, listing._id]);
+
+            // --- Distance Effect ---
+            useEffect(() => {
+                if (receiverLocation.lat && receiverLocation.lng && listing.location?.coordinates && listing.location.coordinates.length === 2) {
+                    const listingLat = listing.location.coordinates[1]; const listingLng = listing.location.coordinates[0];
+                    const distKm = getDistanceFromLatLonInKm(receiverLocation.lat, receiverLocation.lng, listingLat, listingLng);
+                    setDistance(distKm);
+                } else { setDistance(null); }
+            }, [receiverLocation, listing.location, listing._id]);
+
+            // --- Safely access data for display ---
             const firstItemName = listing.items?.[0]?.itemName || 'Food Item';
             const donorName = listing.donor?.name || 'Unknown Donor';
-            const donorAvgRating = listing.donor?.avgRating; // Get avg rating from populated donor
-            const pickupAddress = listing.address || 'Address not specified'; // Get address from listing itself
+            const donorAvgRating = listing.donor?.avgRating;
+            const pickupAddress = listing.address || 'Address not specified'; // Ensure this uses listing.address
 
+            // --- Hover Handlers ---
+            const handleMouseEnter = () => {
+                setHoveredListingId(listing._id);
+                if (receiverLocation.lat && receiverLocation.lng && listing.location?.coordinates && listing.location.coordinates.length === 2) {
+                    const startPoint = [receiverLocation.lat, receiverLocation.lng];
+                    const endPoint = [listing.location.coordinates[1], listing.location.coordinates[0]];
+                    setRouteLinePositions([startPoint, endPoint]);
+                }
+            };
+            const handleMouseLeave = () => { setHoveredListingId(null); setRouteLinePositions([]); };
+
+            // --- JSX Return ---
             return (
-                <div className="bg-white p-4 rounded-lg shadow-xl border-l-4 border-blue-500 hover:shadow-2xl transition duration-300 cursor-pointer animate-fade-in" onClick={() => setSelectedListing(listing)}>
-                    {/* Main Title */}
-                    <h4 className="font-bold text-lg">{firstItemName} {listing.items?.length > 1 ? `(+${listing.items.length - 1} more)` : ''} ({listing.veg === 'veg' ? '🌱' : listing.veg === 'non-veg' ? '🍖' : '🍲'})</h4>
+                <div
+                    className={`bg-white p-4 rounded-lg shadow-md border ${hoveredListingId === listing._id ? 'border-red-400 ring-1 ring-red-300' : 'border-gray-200'} ${isExpired ? 'opacity-60' : ''} hover:shadow-lg transition duration-200 cursor-pointer animate-fade-in`}
+                    onClick={() => setSelectedListing(listing)}
+                    onMouseEnter={handleMouseEnter}
+                    onMouseLeave={handleMouseLeave}
+                >
+                    {/* Top Section: Title & Timer */}
+                    <div className="flex justify-between items-start mb-2">
+                        <h4 className="font-bold text-md sm:text-lg text-gray-800 mr-2 flex-grow">{firstItemName} {listing.items?.length > 1 ? `(+${listing.items.length - 1})` : ''} <span className="text-sm font-normal">({listing.veg === 'veg' ? '🌱' : listing.veg === 'non-veg' ? '🍖' : '🍲'})</span></h4>
+                        <div className={`whitespace-nowrap font-semibold text-xs px-2 py-0.5 rounded-full ${isExpired ? 'text-red-700 bg-red-100' : 'text-green-700 bg-green-100'}`}>
+                            ⏳ {isExpired ? 'Expired' : timeLeft}
+                        </div>
+                    </div>
 
-                    {/* Donor Details */}
-                    <div className="text-gray-600 text-sm mt-1 mb-2">
-                        <span>From: <span className="font-semibold">{donorName}</span></span>
+                    {/* Donor Info */}
+                    <div className="text-gray-600 text-xs mb-2 border-t pt-2 mt-2">
+                        <span>From: <span className="font-semibold text-gray-700">{donorName}</span></span>
                         <span className="ml-2"> | Rating:
                             <span className="font-semibold text-amber-600 ml-1">
-                                {donorAvgRating ? `${donorAvgRating.toFixed(1)} ★` : 'Not Rated'}
+                                {donorAvgRating ? `${donorAvgRating.toFixed(1)} ★` : 'N/A'}
                             </span>
                         </span>
                     </div>
 
-                    {/* Food Items List */}
-                    <div className="text-sm my-2">
-                        <span className="font-semibold">Items:</span>
-                        <ul className="list-disc list-inside ml-4 mt-1">
+                    {/* --- Food Items List (Restored) --- */}
+                    <div className="text-xs my-2">
+                        <span className="font-semibold text-gray-700">Items Included:</span>
+                        <ul className="list-disc list-inside ml-4 mt-1 space-y-0.5"> {/* Added space-y */}
                             {listing.items?.map((item, index) => (
-                                <li key={item.id || index} className="text-gray-700">
+                                <li key={item.id || index} className="text-gray-600">
                                     {item.itemName} ({item.quantity} {item.unit})
                                 </li>
-                            )) || <li>Details unavailable</li>}
+                            )) || <li className="text-gray-400">Details unavailable</li>}
                         </ul>
                     </div>
+                    {/* --- End Items List --- */}
 
-                    {/* Pickup Address */}
-                    <p className="text-xs text-gray-500 mt-2">Pickup: {pickupAddress}</p>
+                    {/* Address & Distance */}
+                    <p className="text-xs text-gray-500 mt-2 line-clamp-1" title={pickupAddress}>📍 <span className="font-medium text-gray-700">Pickup:</span> {pickupAddress}</p>
+                    {distance !== null ? (
+                        <p className="text-xs font-semibold text-indigo-600 mt-1">~ {distance.toFixed(1)} km away</p>
+                    ) : (!receiverLocation.lat && <p className="text-xs text-gray-400 mt-1">Set location for distance</p>)}
 
 
-                    {/* Nutritional Estimate */}
-                    <div className="mt-2 text-sm bg-blue-50 p-2 rounded border inline-block">
-                        <h5 className="font-semibold text-blue-700 text-xs mb-1">✨ Est. Nutrition (Total)</h5>
-                        <p className="text-xs">Cal: <span className="font-semibold">{listing.nutritionalData?.calories || '?'}</span> | Prot: <span className="font-semibold">{listing.nutritionalData?.protein || '?'}g</span> | Fat: <span className="font-semibold">{listing.nutritionalData?.fat || '?'}g</span></p>
+                    {/* Nutrition Badge */}
+                    <div className="mt-3 text-xs bg-blue-50 p-1 px-2 rounded border inline-block">
+                        <span className="font-semibold text-blue-700">Nutrition (Est. Total):</span> Cal: {listing.nutritionalData?.calories || '?'} | Prot: {listing.nutritionalData?.protein || '?'}g
                     </div>
-
-                    {/* Listing Rating (Different from Donor Rating) */}
-                    {/* <p className="text-sm mt-2 font-semibold text-green-700">Listing Avg Rating: {listing.ratingAvg ? `${listing.ratingAvg.toFixed(1)} ★` : 'Not Rated Yet'}</p> */}
-
                 </div>
             );
         };
+        // --- END FINAL ListingCard ---L ListingCard ---
+        // --- END ListingCard with TIMER ---
         // --- END ENHANCED ListingCard ---
         const Modal = () => {
             if (!selectedListing) return null;
@@ -1207,111 +1446,269 @@ const Annapurna = () => {
             );
         };
 
+        // --- START: New return statement for renderReceiverView ---
         return (
-            <div className="container mx-auto p-4 pt-8 sm:pt-12 md:pt-20">
-                {Modal()}
-                <h2 className="text-3xl font-bold text-gray-800 mb-6 border-b pb-2">Receiver Dashboard</h2>
-                {/* --- ADD MAP CONTAINER HERE (Temporarily) --- */}
+            // Main container with background and padding
+            <div className="container mx-auto px-4 py-8 pt-24 min-h-screen bg-gradient-to-br from-blue-50 via-gray-50 to-blue-100">
+                {Modal()} {/* Keep the modal render call */}
 
-                {/* --- END MAP CONTAINER --- */}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                    <div className="lg:col-span-2">
-                        <h3 className="text-xl font-semibold mb-4">Live Food Map</h3>
-                        {/* --- PASTE THIS NEW, CORRECT CODE --- */}
-                        <div className="bg-white p-4 rounded-lg shadow-md mb-6 h-96 relative z-10"> {/* <-- ADDED relative z-10 */}
-                            <MapContainer
-                                center={[13.6288, 79.4192]} // Centered on Tirupati
-                                zoom={13}
-                                scrollWheelZoom={true}
-                                style={{ height: '100%', width: '100%', borderRadius: '8px' }}
-                            >
-                                <TileLayer
-                                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                                />
+                {/* Dashboard Header */}
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 px-2">
+                    <div>
+                        <h2 className="text-3xl sm:text-4xl font-extrabold text-gray-800">Receiver Hub</h2>
+                        <p className="text-md text-gray-600 mt-1">Find and claim available food donations near you.</p>
+                    </div>
+                    {/* Optional: Add receiver-specific info/badge here if needed */}
+                </div>
 
-                                {/* Loop over available food and create a marker for each */}
-                                {availableFood.map(listing => {
-                                    // MongoDB stores [Longitude, Latitude]
-                                    // Leaflet needs [Latitude, Longitude]
-                                    // So we must reverse them!
-                                    const position = [
-                                        listing.location.coordinates[1], // Latitude
-                                        listing.location.coordinates[0]  // Longitude
-                                    ];
+                {/* Main Content Area - Two Columns */}
+                <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
 
+                    {/* --- Left Column (Map & Order Status) --- */}
+                    <div className="lg:w-2/3 space-y-6"> {/* Takes 2/3 width on large screens */}
+                        {/* Map Section */}
+                        <section className="bg-white p-4 sm:p-6 rounded-xl shadow-lg border border-gray-100">
+                            <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                                Live Food Map
+                            </h3>
+                            <div className="h-96 w-full rounded-lg overflow-hidden relative z-10 border border-gray-200"> {/* Ensure map height and border */}
+                                <MapContainer
+                                    center={[13.6288, 79.4192]} // Centered on Tirupati
+                                    zoom={13}
+                                    scrollWheelZoom={true}
+                                    style={{ height: '100%', width: '100%' }} // Map takes full height of container
+                                >
+                                    <TileLayer
+                                        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                                    />
+                                    {/* Markers loop */}
+                                    {availableFood.map(listing => {
+                                        if (!listing.location?.coordinates || listing.location.coordinates.length !== 2) return null;
+                                        const position = [listing.location.coordinates[1], listing.location.coordinates[0]];
+                                        if (typeof position[0] !== 'number' || typeof position[1] !== 'number') return null;
+                                        return (
+                                            <Marker key={listing._id} position={position}>
+                                                <Popup>
+                                                    {/* Keep existing popup content */}
+                                                    <div className="font-sans text-sm">
+                                                        <h4 className="font-bold text-md mb-1">{listing.items?.[0]?.itemName || 'Food Item'} {listing.items?.length > 1 ? `(+${listing.items.length - 1})` : ''}</h4>
+                                                        <p className="mb-1">{listing.items?.length || 0} item(s). ({listing.veg === 'veg' ? '🌱' : listing.veg === 'non-veg' ? '🍖' : '🍲'})</p>
+                                                        <p className="text-xs text-gray-600 mb-2">From: {listing.donor?.name || 'Unknown'}</p>
+                                                        <button onClick={() => setSelectedListing(listing)} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-1 px-2 rounded-lg font-bold text-xs transition duration-200">View & Claim</button>
+                                                    </div>
+                                                </Popup>
+                                            </Marker>
+                                        );
+                                    })}
+                                    {/* Polyline for Hover Route */}
+                                    {routeLinePositions.length === 2 && /* ... checks ... */ (
+                                        <Polyline positions={routeLinePositions} pathOptions={{ color: 'red', weight: 3, opacity: 0.7 }} />
+                                    )}
+                                </MapContainer>
+                            </div>
+                        </section>
+
+                        {/* Order Status Section */}
+                        <section className="bg-white p-4 sm:p-6 rounded-xl shadow-lg border border-gray-100">
+                            <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                                </svg>
+                                Your Claimed Orders
+                            </h3>
+                            <div className="space-y-4 max-h-96 overflow-y-auto pr-2"> {/* Added max height and scroll */}
+                                {dataLoading && myClaims.length === 0 && <p className="text-gray-500 animate-pulse text-sm">Loading your orders...</p>}
+                                {!dataLoading && myClaims.length === 0 && <p className="text-gray-500 text-sm">You haven't claimed any food yet.</p>}
+                                {myClaims.map(order => {
+                                    const listingDetails = order.listingId || { items: [{ itemName: 'Unknown Item' }] }; // Safer default
+                                    const firstItemName = listingDetails.items?.[0]?.itemName || 'Food Item';
                                     return (
-                                        <Marker key={listing._id} position={position}>
-                                            <Popup>
-                                                <div className="font-sans">
-                                                    <h4 className="font-bold text-md">{listing.items[0].itemName}</h4>
-                                                    <p>{listing.items.length} item(s) available.</p>
-                                                    <p>{listing.veg === 'veg' ? '🌱' : '🍖'}</p>
+                                        <div key={order._id} className="bg-gray-50 p-4 rounded-lg border border-gray-200 shadow-sm flex flex-col sm:flex-row justify-between sm:items-center gap-3 animate-fade-in">
+                                            <div>
+                                                <h4 className="font-bold text-md text-gray-700">{firstItemName} {listingDetails.items?.length > 1 ? `(+${listingDetails.items.length - 1})` : ''}</h4>
+                                                <p className="text-gray-600 text-xs mt-1">From: {listingDetails.donor?.name || 'Unknown'} | Rider: {order.riderName || 'Pending'}</p>
+                                                <p className="text-xs text-gray-500 mt-1">Fee: ₹{order.totalFee || 'N/A'}</p>
+                                            </div>
+                                            <div className="flex flex-col items-start sm:items-end gap-1">
+                                                <span className={`px-3 py-1 text-xs font-semibold rounded-full whitespace-nowrap ${order.status === 'awaiting_rider' ? 'bg-yellow-100 text-yellow-800 ring-1 ring-yellow-300' :
+                                                    order.status === 'picked_up' ? 'bg-orange-100 text-orange-800 ring-1 ring-orange-300' :
+                                                        order.status === 'delivered' ? 'bg-green-100 text-green-800 ring-1 ring-green-300' : 'bg-gray-100 text-gray-800 ring-1 ring-gray-300'
+                                                    }`}>
+                                                    {order.status.replace('_', ' ').toUpperCase()}
+                                                </span>
+                                                {order.status === 'delivered' && (
                                                     <button
-                                                        onClick={() => setSelectedListing(listing)}
-                                                        className="w-full mt-2 bg-blue-600 text-white py-1 px-2 rounded-lg font-bold text-xs"
+                                                        onClick={() => {
+                                                            const fullListing = listings.find(l => l._id === listingDetails._id);
+                                                            if (fullListing) setSelectedListing(fullListing);
+                                                        }}
+                                                        className="text-xs text-blue-600 hover:underline mt-1"
                                                     >
-                                                        View & Claim
+                                                        Rate/View Details
                                                     </button>
-                                                </div>
-                                            </Popup>
-                                        </Marker>
+                                                )}
+                                            </div>
+                                        </div>
                                     );
                                 })}
-                            </MapContainer>
-                        </div>
-                        {/* --- END OF NEW CODE --- */}
-                        <h3 className="text-xl font-semibold my-4">Your Orders Status</h3>
-                        <div className="space-y-3">
-                            {dataLoading && myClaims.length === 0 && <p className="text-gray-500 animate-pulse">Loading orders...</p>}
-                            {!dataLoading && myClaims.length === 0 && <p className="text-gray-500">No active orders.</p>}
-                            {myClaims.map(order => {
-                                // Defensive check for populated data
-                                const listingDetails = order.listingId || { foodItem: 'Unknown Item' };
-                                return (
-                                    <div key={order._id} className="bg-white p-4 rounded-lg shadow border-l-4 border-blue-500">
-                                        <div className="flex justify-between items-center">
-                                            <h4 className="font-bold text-lg">{listingDetails.foodItem}</h4>
-                                            <span className={`px-3 py-1 text-xs font-semibold rounded-full ${order.status === 'awaiting_rider' ? 'bg-yellow-100 text-yellow-700' :
-                                                order.status === 'picked_up' ? 'bg-orange-100 text-orange-700' :
-                                                    order.status === 'delivered' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'
-                                                }`}>
-                                                {order.status.replace('_', ' ').toUpperCase()}
-                                            </span>
-                                        </div>
-                                        <p className="text-gray-600 text-sm">Rider: {order.riderName || 'Pending'} | To: <span className="font-semibold">{order.receiverAddress}</span></p>
-                                        <p className="text-sm mt-1">Fee: ₹{order.totalFee || 'N/A'}</p>
-                                        {order.status === 'delivered' && (
-                                            <button
-                                                onClick={() => {
-                                                    // Find the full listing object to pass to the modal
-                                                    const fullListing = listings.find(l => l._id === listingDetails._id);
-                                                    if (fullListing) setSelectedListing(fullListing);
-                                                }}
-                                                className="text-xs text-blue-500 hover:underline mt-1"
-                                            >
-                                                Rate/View Details
-                                            </button>
-                                        )}
-                                    </div>
-                                );
-                            })}
-                        </div>
+                            </div>
+                        </section>
                     </div>
-                    <div className="lg:col-span-1">
-                        <h3 className="text-xl font-semibold mb-4 text-blue-600">Nearby Listings ({availableFood.length})</h3>
-                        {dataLoading && listings.length === 0 && <p className="text-gray-500 animate-pulse">Loading listings...</p>}
-                        {!dataLoading && availableFood.length === 0 && <p className="text-gray-500">No food available nearby.</p>}
-                        <div className="space-y-4 max-h-[80vh] overflow-y-auto pr-2">
-                            {availableFood.map(listing => <ListingCard key={listing._id} listing={listing} />)}
-                        </div>
+
+                    {/* --- Right Column (Nearby Listings) --- */}
+                    <div className="lg:w-1/3"> {/* Takes 1/3 width on large screens */}
+                        <section className="bg-white p-4 sm:p-6 rounded-xl shadow-lg border border-gray-100 lg:sticky lg:top-24"> {/* Sticky sidebar on large screens */}
+                            {/* Header with Set Location Button */}
+                            {/* <div className="flex justify-between items-center mb-4 pb-3 border-b border-gray-200">
+                                <h3 className="text-xl font-bold text-gray-800 flex items-center">
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+                                    </svg>
+                                    Nearby Listings ({availableFood.length})
+                                </h3>
+                                <button
+                                    onClick={() => setShowReceiverLocationModal(true)}
+                                    className="text-xs bg-blue-100 hover:bg-blue-200 text-blue-700 font-semibold py-1.5 px-3 rounded-full flex items-center transition duration-200"
+                                    title={receiverLocation.addressString || 'Set location for distance'}
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                                    {receiverLocation.lat ? 'Change' : 'Set Location'}
+                                </button>
+                            </div> */}
+                            {/* --- NEW Right Column Header with Filters --- */}
+
+                            <div className="mb-4 pb-3 border-b border-gray-200">
+
+                                {/* Title and Location Button */}
+
+                                <div className="flex justify-between items-center mb-3">
+
+                                    <h3 className="text-xl font-bold text-gray-800 flex items-center">
+
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+
+                                        </svg>
+
+                                        Nearby Listings {/* Count will be added later */}
+
+                                    </h3>
+
+                                    <button
+
+                                        onClick={() => setShowReceiverLocationModal(true)}
+
+                                        className="text-xs bg-blue-100 hover:bg-blue-200 text-blue-700 font-semibold py-1.5 px-3 rounded-full flex items-center transition duration-200"
+
+                                        title={receiverLocation.addressString || 'Set location for distance'}
+
+                                    >
+
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+
+                                        {receiverLocation.lat ? 'Change' : 'Set Location'}
+
+                                    </button>
+
+                                </div>
+
+
+
+                                {/* Search Bar */}
+
+                                <div className="relative mb-3">
+
+                                    <input
+
+                                        type="text"
+
+                                        placeholder="Search by item name..."
+
+                                        value={nearbySearchQuery}
+
+                                        onChange={(e) => setNearbySearchQuery(e.target.value)}
+
+                                        className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-full focus:ring-blue-500 focus:border-blue-500 text-sm"
+
+                                    />
+
+                                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+
+                                        <svg className="h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+
+                                            <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
+
+                                        </svg>
+
+                                    </div>
+
+                                </div>
+
+
+
+                                {/* Dietary Filters */}
+
+                                <div className="flex space-x-2">
+
+                                    <button
+
+                                        onClick={() => setDietaryFilter('all')}
+
+                                        className={`flex-1 py-1 px-3 rounded-full text-xs font-semibold transition duration-200 ${dietaryFilter === 'all' ? 'bg-blue-600 text-white shadow' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+
+                                    >All</button>
+
+                                    <button
+
+                                        onClick={() => setDietaryFilter('veg')}
+
+                                        className={`flex-1 py-1 px-3 rounded-full text-xs font-semibold transition duration-200 ${dietaryFilter === 'veg' ? 'bg-green-600 text-white shadow' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+
+                                    >Veg 🌱</button>
+
+                                    <button
+
+                                        onClick={() => setDietaryFilter('non-veg')}
+
+                                        className={`flex-1 py-1 px-3 rounded-full text-xs font-semibold transition duration-200 ${dietaryFilter === 'non-veg' ? 'bg-red-600 text-white shadow' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+
+                                    >Non-Veg 🍖</button>
+
+                                </div>
+
+                            </div>
+                            {/* Listings List */}
+                            {dataLoading && listings.length === 0 && <p className="text-gray-500 animate-pulse text-sm">Loading listings...</p>}
+                            {!dataLoading && availableFood.length === 0 && <p className="text-gray-500 text-sm">No food available nearby.</p>}
+                            <div className="space-y-4 max-h-[75vh] overflow-y-auto pr-2 custom-scrollbar"> {/* Scrollable list */}
+                                {availableFood.map(listing => <ListingCard key={listing._id} listing={listing} />)}
+                            </div>
+                        </section>
                     </div>
                 </div>
             </div>
         );
+        // --- END: New return statement for renderReceiverView ---
     };
 
     const renderRiderView = () => {
+        // --- MODIFY Data Filtering ---
+        const allUserOrders = dataForCurrentRole.myActiveOrders; // This name is misleading, it gets ALL orders for the rider
+        const availableOrdersForPickup = dataForCurrentRole.availableOrders; // Orders waiting for ANY rider
+
+        // Separate orders based on status for THIS rider
+        const myActiveDeliveries = allUserOrders.filter(o => o.riderId === userProfile._id && o.status === 'picked_up');
+        const myCompletedDeliveries = allUserOrders.filter(o => o.riderId === userProfile._id && o.status === 'delivered');
+
+        // Calculate potential earnings (sum riderPayout from active and completed)
+        const totalEarnings = [...myActiveDeliveries, ...myCompletedDeliveries].reduce((sum, order) => sum + (order.riderPayout || 0), 0);
+        // --- END Data Filtering ---
         const availableOrders = dataForCurrentRole.availableOrders;
         const myActiveOrders = dataForCurrentRole.myActiveOrders;
 
@@ -1352,29 +1749,111 @@ const Annapurna = () => {
         };
 
         return (
-            <div className="container mx-auto p-4 pt-8 sm:pt-12 md:pt-20">
-                <h2 className="text-3xl font-bold text-gray-800 mb-6 border-b pb-2">Rider Dashboard</h2>
-                {error && <p className="text-red-500 mb-4">{error}</p>}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                    <div className="lg:col-span-1">
-                        <h3 className="text-xl font-semibold mb-4 text-blue-700">My Active Delivery ({myActiveOrders.length})</h3>
-                        <div className="space-y-4">
-                            {dataLoading && myActiveOrders.length === 0 && <p className="text-gray-500 animate-pulse">Loading active orders...</p>}
-                            {!dataLoading && myActiveOrders.length === 0 && (<p className="text-gray-500">No active orders.</p>)}
-                            {myActiveOrders.map(order => <OrderCard key={order._id} order={order} isAvailable={false} />)}
-                        </div>
+            // Main container with background and padding
+            <div className="container mx-auto px-4 py-8 pt-24 min-h-screen bg-gradient-to-br from-indigo-50 via-gray-50 to-purple-100">
+
+                {/* Dashboard Header */}
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 px-2">
+                    <div>
+                        <h2 className="text-3xl sm:text-4xl font-extrabold text-gray-800">Rider Dashboard</h2>
+                        <p className="text-md text-gray-600 mt-1">Manage deliveries and track earnings.</p>
                     </div>
-                    <div className="lg:col-span-2">
-                        <h3 className="text-xl font-semibold mb-4 text-gray-800">Available Orders ({availableOrders.length})</h3>
-                        <div className="space-y-4 max-h-[80vh] overflow-y-auto pr-2">
-                            {dataLoading && availableOrders.length === 0 && <p className="text-gray-500 animate-pulse">Loading available orders...</p>}
-                            {!dataLoading && availableOrders.length === 0 && (<p className="text-gray-500">No orders available.</p>)}
-                            {availableOrders.map(order => <OrderCard key={order._id} order={order} isAvailable={true} />)}
-                        </div>
+                    {/* Optional Rider Badge */}
+                    <div className="mt-4 sm:mt-0 relative inline-block px-4 py-2 bg-gradient-to-r from-purple-500 to-indigo-600 text-white rounded-lg shadow-lg">
+                        <span className="font-semibold">🚀 Annapurna Rider</span>
+                    </div>
+                </div>
+
+                {/* Main Content Area - Grid Layout */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 lg:gap-8">
+
+                    {/* --- Left Column (Earnings & Active Delivery) --- */}
+                    <div className="lg:col-span-1 space-y-6">
+                        {/* Earnings Summary Card */}
+                        <section className="bg-white p-6 rounded-xl shadow-lg border border-gray-100 sticky top-24"> {/* Sticky on large screens */}
+                            <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
+                                </svg>
+                                Earnings Summary
+                            </h3>
+                            <div className="text-center bg-gradient-to-br from-green-50 to-teal-50 p-4 rounded-lg border border-green-200">
+                                <p className="text-sm text-green-800 font-medium">Total Potential Earnings</p>
+                                <p className="text-4xl font-extrabold text-green-700 mt-1">₹{totalEarnings.toFixed(2)}</p>
+                                <p className="text-xs text-gray-500 mt-2">(Based on {myActiveDeliveries.length} active & {myCompletedDeliveries.length} completed deliveries)</p>
+                            </div>
+                        </section>
+
+                        {/* Active Delivery Card */}
+                        <section className="bg-white p-4 sm:p-6 rounded-xl shadow-lg border border-gray-100">
+                            <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2 text-orange-600 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                                Your Active Delivery ({myActiveDeliveries.length})
+                            </h3>
+                            <div className="space-y-4">
+                                {dataLoading && myActiveDeliveries.length === 0 && <p className="text-gray-500 animate-pulse text-sm">Loading...</p>}
+                                {!dataLoading && myActiveDeliveries.length === 0 && <p className="text-gray-500 text-sm">No active deliveries right now.</p>}
+                                {myActiveDeliveries.map(order => <OrderCard key={order._id} order={order} isAvailable={false} />)}
+                            </div>
+                        </section>
+                    </div>
+
+                    {/* --- Right Column (Available Orders & History) --- */}
+                    <div className="lg:col-span-2 space-y-6">
+                        {/* Available Orders Section */}
+                        <section className="bg-white p-4 sm:p-6 rounded-xl shadow-lg border border-gray-100">
+                            <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h7" />
+                                </svg>
+                                Available Orders ({availableOrdersForPickup.length})
+                            </h3>
+                            {dataLoading && availableOrdersForPickup.length === 0 && <p className="text-gray-500 animate-pulse text-sm">Loading available orders...</p>}
+                            {!dataLoading && availableOrdersForPickup.length === 0 && <p className="text-gray-500 text-sm">No orders available for pickup nearby.</p>}
+                            {/* Grid layout for available orders */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
+                                {availableOrdersForPickup.map(order => <OrderCard key={order._id} order={order} isAvailable={true} />)}
+                            </div>
+                        </section>
+
+                        {/* Delivery History Section */}
+                        <section className="bg-white p-4 sm:p-6 rounded-xl shadow-lg border border-gray-100">
+                            <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 mr-2 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                </svg>
+                                Delivery History ({myCompletedDeliveries.length})
+                            </h3>
+                            {dataLoading && myCompletedDeliveries.length === 0 && <p className="text-gray-500 animate-pulse text-sm">Loading history...</p>}
+                            {!dataLoading && myCompletedDeliveries.length === 0 && <p className="text-gray-500 text-sm">You haven't completed any deliveries yet.</p>}
+                            <div className="space-y-3 max-h-96 overflow-y-auto pr-2 custom-scrollbar">
+                                {myCompletedDeliveries.map(order => {
+                                    const listingDetails = order.listingId || { items: [{ itemName: 'Unknown Item' }] };
+                                    const firstItemName = listingDetails.items?.[0]?.itemName || 'Food Item';
+                                    return (
+                                        <div key={order._id} className="bg-gray-100 p-3 rounded-lg border border-gray-200 opacity-80 flex flex-col sm:flex-row justify-between sm:items-center gap-2 animate-fade-in">
+                                            <div>
+                                                <h4 className="font-semibold text-sm text-gray-700">{firstItemName} {listingDetails.items?.length > 1 ? `(+${listingDetails.items.length - 1})` : ''}</h4>
+                                                <p className="text-gray-500 text-xs mt-1">To: {order.receiverName} | P/U: {listingDetails.address}</p>
+                                                <p className="text-xs text-gray-500">Delivered: {order.deliveredAt ? new Date(order.deliveredAt).toLocaleDateString() : 'N/A'}</p>
+                                            </div>
+                                            <div className="text-right">
+                                                <p className="text-sm font-bold text-green-600">₹{order.riderPayout?.toFixed(2) || '0.00'}</p>
+                                                <p className="text-xs text-gray-400">Earned</p>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </section>
                     </div>
                 </div>
             </div>
         );
+        // --- END: New return statement for renderRiderView ---
     };
 
     // --- Inside the Annapurna component ---
@@ -1435,7 +1914,7 @@ const Annapurna = () => {
 
     return (
         <div className="min-h-screen bg-gray-50 font-sans animate-fade-in">
-            <Header />
+            <Header /> {/* <-- ENSURE THIS LINE IS HERE */}
             <main className="pb-8">
                 {/* --- ADD THIS MODAL RENDER CALL --- */}
                 <LocationSelectorModal
@@ -1444,8 +1923,18 @@ const Annapurna = () => {
                     onLocationSelect={setNewDonationLocation} // Function to pass selected location back to Annapurna's state
                 />
                 {/* --- END MODAL RENDER CALL --- */}
+                {/* --- ADD THIS MODAL FOR RECEIVER --- */}
+
+                <LocationSelectorModal
+                    isOpen={showReceiverLocationModal} // Use the new state variable
+                    onClose={() => setShowReceiverLocationModal(false)} // Use the new setter
+                    onLocationSelect={setReceiverLocation} // Update the receiver's location state
+                />
+                {/* --- END ADD --- */}
+
                 {renderView()}
             </main>
+
             <footer className="text-center p-4 text-xs text-gray-400 border-t mt-8">
                 Annapurna Hackathon Project - {new Date().getFullYear()}
             </footer>

@@ -285,10 +285,11 @@ app.post('/api/listings', auth, async (req, res) => { // <-- Added 'auth' middle
 app.get('/api/listings', async (req, res) => { // No 'auth' middleware
     try {
         // Find all listings
-        const listings = await Listing.find()
-            .populate('donor', 'name role') // Populate the donor's name and role
+        // --- CORRECTED QUERY ---
+        const listings = await Listing.find() // Find all listings
+            .populate('donor', 'name role avgRating') // Also populate donor rating
             .sort({ createdAt: -1 }); // Sort by newest first
-
+        // --- END CORRECTION ---
         res.status(200).json(listings);
     } catch (error) {
         // This log will show you the error in your backend terminal
